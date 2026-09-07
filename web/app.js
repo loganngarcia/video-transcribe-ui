@@ -12,6 +12,7 @@ let readerKind = prefs.readerKind || (localHost ? 'server' : 'local');
 let key = '', ready = false, localReader = false, modelFailed = false, busy = false;
 let stream, recorder, clip, previewURL, jobId, timer, connectEpoch = 0;
 let cancelRequested = false, selected, acquiring = false, localPreloadPromise;
+let clipSource='video', liveCaptureSession=null, liveCameraFrames=null;
 const history = [];
 
 const notice = message => { $('notice').textContent = message; };
@@ -30,7 +31,9 @@ function friendlyError(error) {
     return {message:'This browser ran out of memory while processing the video. Close other heavy tabs and try a shorter recording.',raw};
   }
   if(/decode|video/i.test(raw) && /could not|cannot|failed|unsupported/i.test(raw)) {
-    return {message:'The browser could not decode this recording. Try recording again or upload an MP4/WebM video.',raw};
+    return clipSource==='recording'
+      ? {message:'The camera recording could not be reopened by this browser. Record again; Video Transcribe now reads camera frames live so this should only be a fallback error.',raw}
+      : {message:'The browser could not decode this video file. Try an MP4 or WebM file.',raw};
   }
   return {message:raw.length<180?raw:'On-device transcription stopped unexpectedly. Try again or use compatibility mode.',raw};
 }
@@ -132,7 +135,7 @@ async function api(path,options={},timeout=10000) {
 
 function controls() {
   const recording=recorder?.state==='recording';
-  $('record').disabled=!stream || busy;
+  $('record').disabled=!stream || busy || (localReader && !ready);
   $('record').textContent=recording ? 'Stop & transcribe' : 'Start recording';
   $('upload').disabled=busy || recording;
   if($('new-video')) $('new-video').disabled=busy;
@@ -235,6 +238,10 @@ $('endpoint').oninput=()=>$('endpoint').setCustomValidity('');
 
 function stopCamera() {
   if(recorder?.state==='recording') recorder.stop();
+  if(liveCaptureSession && recorder?.state!=='recording') {
+    try { liveCaptureSession.cancel(); } catch {}
+    liveCaptureSession=null;
+  }
   stream?.getTracks().forEach(track=>track.stop());
   stream=null;
   $('video').srcObject=null;
@@ -247,6 +254,8 @@ function stopCamera() {
 }
 function clearClip() {
   clip=null;
+  clipSource='video';
+  liveCameraFrames=null;
   if(previewURL) URL.revokeObjectURL(previewURL);
   previewURL=null;
   $('video').removeAttribute('src');
@@ -285,9 +294,11 @@ $('enable').onclick=async()=>{
 };
 $('camera-off').onclick=stopCamera;
 
-function selectClip(blob,name,{source='video'}={}) {
+function selectClip(blob,name,{source='video',cameraFrames=null}={}) {
   clearClip();
   clip=blob;
+  clipSource=source;
+  liveCameraFrames=cameraFrames;
   stopCamera();
   previewURL=URL.createObjectURL(blob);
   $('video').src=previewURL;
@@ -297,28 +308,51 @@ function selectClip(blob,name,{source='video'}={}) {
   $('clip-name').textContent=`${name} · transcription started automatically`;
   $('clip').hidden=false;
   $('new-video').hidden=true;
-  notice(source==='recording'?'Recording stopped. Transcribing automatically now.':'Video selected. Transcribing automatically now.');
+  notice(source==='recording'
+    ? 'Recording stopped. Using the captured camera frames to transcribe now.'
+    : 'Video selected. Transcribing automatically now.');
   void transcribeClip();
 }
 
-$('record').onclick=()=>{
+$('record').onclick=async()=>{
   if(recorder?.state==='recording'){recorder.stop();return;}
   try {
     const mime=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/mp4'].find(type=>MediaRecorder.isTypeSupported(type));
     const chunks=[];
+    if(localReader) {
+      const runtime=await import('./local-vsr.js');
+      liveCaptureSession=await runtime.startLiveMouthCapture($('video'));
+    }
     recorder=new MediaRecorder(stream,{...(mime?{mimeType:mime}:{}),videoBitsPerSecond:1500000});
     recorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data);};
     recorder.onerror=()=>{
       clearInterval(timer);
+      try { liveCaptureSession?.cancel(); } catch {}
+      liveCaptureSession=null;
       stopCamera();
-      notice('Recording failed. Try uploading a video instead.');
+      notice('Recording failed. Try recording again.');
     };
     recorder.onstop=()=>{
       clearInterval(timer);
       $('timer').hidden=true;
-      selectClip(new Blob(chunks,{type:recorder.mimeType}),'Recording complete',{source:'recording'});
+      let cameraFrames=null;
+      if(liveCaptureSession) {
+        try { cameraFrames=liveCaptureSession.stop(); }
+        catch(error) {
+          liveCaptureSession=null;
+          showTranscriptionError(error);
+          $('error-result').hidden=false;
+          $('empty-result').hidden=true;
+          $('result-tag').textContent='NEEDS ATTENTION';
+          stopCamera();
+          return;
+        }
+        liveCaptureSession=null;
+      }
+      selectClip(new Blob(chunks,{type:recorder.mimeType}),'Recording complete',{source:'recording',cameraFrames});
     };
-    recorder.start(500);
+    // No timeslice: a single finalized blob is more broadly seekable/playable.
+    recorder.start();
     const started=performance.now();
     $('timer').hidden=false;
     $('timer').textContent='0:00 / 0:20';
@@ -450,7 +484,7 @@ async function transcribeClip() {
   try {
     if(localReader) {
       const runtime=await import('./local-vsr.js');
-      const item=await runtime.transcribeLocally(clip,processProgress);
+      const item=await runtime.transcribeLocally(clip,processProgress,liveCameraFrames);
       if(cancelRequested){notice('Transcription cancelled.');finish();return;}
       acceptResult(item);
       return;
