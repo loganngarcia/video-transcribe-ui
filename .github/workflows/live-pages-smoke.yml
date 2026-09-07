@@ -1,0 +1,28 @@
+name: Live Pages smoke
+on:
+  workflow_run:
+    workflows: ["Publish interface"]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  live-browser:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser smoke dependency
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Download real visual-speech sample
+        run: curl -fL --retry 3 https://raw.githubusercontent.com/Sindhu-Hegde/multivsr/master/samples/GBfc471SoSo-00000.mp4 -o browser-smoke.mp4
+      - name: Verify deployed GitHub Pages app
+        env:
+          SITE_URL: https://loganngarcia.github.io/video-transcribe-ui/
+        run: node scripts/browser_smoke.mjs browser-smoke.mp4
