@@ -15,6 +15,28 @@ let cancelRequested = false, selected, acquiring = false, localPreloadPromise;
 const history = [];
 
 const notice = message => { $('notice').textContent = message; };
+function friendlyError(error) {
+  const raw=String(error?.message||error||'Unknown error');
+  if(/activeTexture|webgl|texture|gpu/i.test(raw)) {
+    return {
+      message:'Your browser graphics engine stopped during face tracking or transcription. Video Transcribe can retry in CPU/WASM compatibility mode.',
+      raw
+    };
+  }
+  if(/memory|out of memory|allocation/i.test(raw)) {
+    return {message:'This browser ran out of memory while processing the video. Close other heavy tabs and try a shorter recording.',raw};
+  }
+  if(/decode|video/i.test(raw) && /could not|cannot|failed|unsupported/i.test(raw)) {
+    return {message:'The browser could not decode this recording. Try recording again or upload an MP4/WebM video.',raw};
+  }
+  return {message:raw.length<180?raw:'On-device transcription stopped unexpectedly. Try again or use compatibility mode.',raw};
+}
+function showTranscriptionError(error) {
+  const info=friendlyError(error);
+  $('error-message').textContent=info.message;
+  $('error-technical').textContent=info.raw;
+  $('error-technical-wrap').open=false;
+}
 const percent = value => Math.max(0,Math.min(100,Math.round((value || 0)*100)));
 const formatBytes = bytes => {
   if(!Number.isFinite(bytes) || bytes <= 0) return '';
@@ -391,7 +413,7 @@ async function transcribeClip() {
   if(!clip||busy) return;
   if(!localReader&&!ready) {
     $('error-result').hidden=false;
-    $('error-message').textContent='The connected reader is not ready. Check Options and try again.';
+    showTranscriptionError(new Error('The connected reader is not ready. Check Options and try again.'));
     $('empty-result').hidden=true;
     $('result').hidden=true;
     $('result-tag').textContent='NEEDS ATTENTION';
@@ -399,7 +421,7 @@ async function transcribeClip() {
   }
   if(localReader&&modelFailed) {
     $('error-result').hidden=false;
-    $('error-message').textContent='On-device transcription could not start. Open Options to use a connected reader.';
+    showTranscriptionError(new Error('On-device transcription could not start. Open Options to use a connected reader.'));
     $('empty-result').hidden=true;
     $('result').hidden=true;
     $('result-tag').textContent='NEEDS ATTENTION';
@@ -469,7 +491,7 @@ async function transcribeClip() {
     $('result').hidden=true;
     $('empty-result').hidden=true;
     $('error-result').hidden=false;
-    $('error-message').textContent=error.message||'Transcription failed. Try again.';
+    showTranscriptionError(error);
     $('result-tag').textContent='NEEDS ATTENTION';
     if(clip) $('new-video').hidden=false;
     notice('Transcription did not finish. Use Try again or record another video.');
@@ -479,6 +501,12 @@ async function transcribeClip() {
 $('retry').onclick=()=>{
   $('error-result').hidden=true;
   void transcribeClip();
+};
+$('compatibility-retry').onclick=()=>{
+  try {localStorage.setItem('video-transcribe-force-wasm','1');} catch {}
+  $('error-result').hidden=true;
+  notice('Compatibility mode enabled. Retrying with CPU/WASM.');
+  location.reload();
 };
 $('cancel').onclick=()=>{
   cancelRequested=true;
