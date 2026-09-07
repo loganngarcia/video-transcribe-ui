@@ -30,3 +30,7 @@
 #clip{margin-top:12px;padding:12px 14px;border-radius:14px;background:color-mix(in srgb,var(--raised) 70%,transparent)}
 #clip p{margin:0;font-size:12px}
 #clip .controls{margin-top:10px}
+
+.error-actions{max-width:360px;width:100%}.error-actions button{white-space:nowrap}
+#error-technical-wrap{width:100%;max-width:520px;margin-top:16px}
+#error-technical{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);padding:10px 0}
