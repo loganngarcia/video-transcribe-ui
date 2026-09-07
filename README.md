@@ -1,4 +1,4 @@
-# Camera Transcribe
+# Video Transcribe
 
 A camera-only speech-to-text interface inspired by [Chaplin UI](https://github.com/loganngarcia/chaplin-ui), with a persistent [USR 2.0](https://github.com/ahaliassos/usr2) reader. Record a short sentence, preview your clip, and turn visible speech into editable text. No microphone permission, no audio input to the model, no LLM rewriting.
 
@@ -143,6 +143,6 @@ The script uses `CAMERA_API_TOKEN` from the environment if needed. It prints the
 
 ## License and credits
 
-This integration is distributed under **CC BY-NC 4.0**, matching the noncommercial use requested for USR 2.0. It is source-available for noncommercial use; that restriction is not an OSI open-source license. Original integration copyright © 2026 Camera Transcribe contributors. Adaptations include the new UI, persistent runtime wrapper, video-only loading, queue and deployment scripts.
+This integration is distributed under **CC BY-NC 4.0**, matching the noncommercial use requested for USR 2.0. It is source-available for noncommercial use; that restriction is not an OSI open-source license. Original integration copyright © 2026 Video Transcribe contributors. Adaptations include the new UI, persistent runtime wrapper, video-only loading, queue and deployment scripts.
 
 USR 2.0 code and models remain subject to their authors' license and attribution. The converted Base+ browser graph under `web/public/model/` is derived from the official Base+ checkpoint and is distributed for the same noncommercial purpose under the upstream licensing terms; the original checkpoint is not committed. Chaplin-derived design elements retain the original MIT notice in `CHAPLIN-LICENSE.txt`. See `THIRD_PARTY_NOTICES.md` and the upstream source for additional component licenses. No third-party sample videos are redistributed.
