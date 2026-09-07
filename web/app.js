@@ -463,7 +463,7 @@ $('speak').onclick=()=>{
 $('download').onclick=()=>{
   const url=URL.createObjectURL(new Blob([$('text').value],{type:'text/plain;charset=utf-8'}));
   const anchor=document.createElement('a');
-  anchor.href=url;anchor.download='camera-transcript.txt';anchor.click();
+  anchor.href=url;anchor.download='video-transcript.txt';anchor.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
 $('clear').onclick=()=>{
