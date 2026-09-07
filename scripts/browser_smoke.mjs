@@ -93,9 +93,21 @@ try {
       null,
       {timeout:10000},
     );
-    await page.waitForTimeout(4300);
+    await page.waitForTimeout(2500);
     await page.click('#record');
-    await requireVisibleAutoTranscription();
+    await page.waitForFunction(() => {
+      const started=document.body.dataset.transcriptionStarted==='true';
+      const busy=document.querySelector('#busy')?.hidden===false;
+      const result=document.querySelector('#result')?.hidden===false;
+      const error=document.querySelector('#error-result')?.hidden===false;
+      return started && (busy || result || error);
+    }, null, {timeout:30000});
+    const immediateError = await page.evaluate(() =>
+      document.querySelector('#error-result')?.hidden === false
+        ? document.querySelector('#error-technical')?.textContent || document.querySelector('#error-message')?.textContent
+        : ''
+    );
+    if (immediateError) throw new Error('Camera auto-transcription failed immediately: ' + immediateError);
   } else {
     await page.setInputFiles('#file', sample);
     await requireVisibleAutoTranscription();
