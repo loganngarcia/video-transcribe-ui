@@ -350,15 +350,13 @@ export async function startLiveMouthCapture(video) {
   let attempted=0;
   let last=null;
   let running=true;
-  let raf=0;
+  let timer=0;
   let captureError=null;
-  let nextAt=performance.now();
 
   const captureFrame=()=>{
     if(!running) return;
-    const now=performance.now();
-    if(now>=nextAt && attempted<500 && video.readyState>=2 && video.videoWidth>0) {
-      nextAt+=40;
+    const started=performance.now();
+    if(attempted<500 && video.readyState>=2 && video.videoWidth>0) {
       attempted++;
       try {
         const result=landmarker.detect(video);
@@ -378,15 +376,18 @@ export async function startLiveMouthCapture(video) {
         running=false;
       }
     }
-    if(running) raf=requestAnimationFrame(captureFrame);
+    if(running) {
+      const elapsed=performance.now()-started;
+      timer=setTimeout(captureFrame,Math.max(0,40-elapsed));
+    }
   };
 
-  raf=requestAnimationFrame(captureFrame);
+  timer=setTimeout(captureFrame,0);
 
   return {
     stop() {
       running=false;
-      if(raf) cancelAnimationFrame(raf);
+      if(timer) clearTimeout(timer);
       if(captureError) throw captureError;
       if(attempted<12 || frames.length<12) {
         throw new Error('The camera recording was too short to read. Record at least half a second.');
@@ -403,7 +404,7 @@ export async function startLiveMouthCapture(video) {
     },
     cancel() {
       running=false;
-      if(raf) cancelAnimationFrame(raf);
+      if(timer) clearTimeout(timer);
     }
   };
 }
