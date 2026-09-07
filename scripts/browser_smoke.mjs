@@ -30,6 +30,17 @@ try {
     {timeout:60000},
   );
 
+  await page.waitForFunction(
+    () => window.CameraPython?.info?.python,
+    null,
+    {timeout:180000},
+  );
+  const python = await page.evaluate(async () => ({
+    version: window.CameraPython.info.python,
+    output: (await window.CameraPython.run("print(6 * 7)")).trim(),
+  }));
+  if (python.output !== '42') throw new Error('Wasmer CPython smoke failed: ' + JSON.stringify(python));
+
   await page.setInputFiles('#file', sample);
   await page.waitForFunction(() => document.querySelector('#clip')?.hidden === false, null, {timeout:30000});
   await page.click('#transcribe');
@@ -44,7 +55,7 @@ try {
   const transcript = await page.inputValue('#text');
   const notice = await page.textContent('#notice');
   const connection = await page.textContent('#connection-detail');
-  console.log(JSON.stringify({transcript, notice, connection, isolated: await page.evaluate(()=>crossOriginIsolated)}, null, 2));
+  console.log(JSON.stringify({transcript, notice, connection, python, isolated: await page.evaluate(()=>crossOriginIsolated)}, null, 2));
 
   if (!transcript.trim()) throw new Error('Browser VSR returned an empty transcript: ' + notice);
   if ((transcript.trim().match(/\S+/g) || []).length < 2) throw new Error('Browser VSR returned fewer than two words: ' + transcript);
