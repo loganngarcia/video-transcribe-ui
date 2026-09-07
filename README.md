@@ -2,7 +2,7 @@
 
 A camera-only speech-to-text interface inspired by [Chaplin UI](https://github.com/loganngarcia/chaplin-ui), with a persistent [USR 2.0](https://github.com/ahaliassos/usr2) reader. Record a short sentence, preview your clip, and turn visible speech into editable text. No microphone permission, no audio input to the model, no LLM rewriting.
 
-**Experimental, noncommercial software.** The UI is ready to connect to a reader; GitHub Pages alone cannot perform inference. A public deployment has not yet been provisioned. Real USR 2.0 Huge inference passed in both Fast and Balanced modes on Linux CPU; see `VALIDATION.md` for timings and remaining checks.
+**Experimental, noncommercial software.** The hosted UI now boots CPython locally through Wasmer in supported browsers, with no Python installation required. That browser runtime is used as a capability layer and future on-device path. Full USR 2.0 inference still requires the native reader today because upstream depends on PyTorch, OpenCV and MediaPipe native modules that are not available as WASIX browser wheels. Real USR 2.0 Huge inference passed in both Fast and Balanced modes on Linux CPU; see `VALIDATION.md`.
 
 ## What you get
 
@@ -12,6 +12,7 @@ A camera-only speech-to-text interface inspired by [Chaplin UI](https://github.c
 - Memory-only session history; no analytics, external fonts, frontend packages or CDN dependencies.
 - Persistent USR 2.0 Huge backend; fast, balanced and thorough decoding modes.
 - Serialized inference, a bounded three-job queue, 50 MB upload limit, cancellation, temporary-video cleanup and expiring results.
+- Automatic Wasmer CPython 3.13 browser sandbox with a capability probe and a small `window.CameraPython.run(...)` bridge for browser-local Python tasks.
 - Setup scripts, automated tests, Docker recipe and GitHub Pages workflow.
 
 ## Run locally
@@ -45,17 +46,26 @@ USR2_SIZE=baseplus USR2_CHECKPOINT=models/usr2-baseplus.pth python scripts/run.p
 
 Baseplus is an optional integration path, not the Huge benchmark model; see validation status before relying on it.
 
-## GitHub Pages and hosted inference
+## GitHub Pages, Wasmer and inference
 
-GitHub Pages serves `web/`. It cannot execute Python, load the PyTorch checkpoint, or provide GPU compute. Every working deployment needs a reachable reader:
+The public site is designed for **zero-install browser use**. GitHub Pages serves the interface and the Wasmer JavaScript SDK starts CPython 3.13 inside the tab. Because Wasmer browser sandboxes require `SharedArrayBuffer`, the Pages build includes `coi-serviceworker` so cross-origin isolation is enabled automatically on GitHub Pages. The first visit may reload once while that service worker takes control.
 
-1. Create the public `video-transcribe-ui` repository and push this project to its `main` branch.
-2. In repository **Settings → Pages**, choose **GitHub Actions** as the source.
-3. Run the included **Publish interface** workflow.
-4. For personal testing, run the reader locally and enter `http://localhost:8000` in the hosted UI's Settings. Browsers may ask for local-network permission or block this combination; use the local UI if so.
-5. For visitors who should not install anything, provision an HTTPS inference server and set the repository variable `API_BASE_URL` to its public address. Redeploy Pages. Give approved testers their connection key separately; never put it in Pages configuration, a workflow, or a committed file.
+Wasmer solves the Python-runtime part, but it does **not** make arbitrary Linux native wheels portable to WebAssembly. USR 2.0 currently requires PyTorch, OpenCV and MediaPipe, so the app performs a real in-browser capability probe and reports whether those modules exist instead of claiming inference works when they do not. As of this build, use the proven native reader for actual USR 2.0 transcription.
 
-This repository does **not** include an already-running public inference service. Provisioning compute and a domain/TLS endpoint is separate from publishing static assets. An unrestricted anonymous public demo requires additional per-user authentication, quotas and abuse controls. The supplied remote mode is intended for a small group of trusted testers.
+The browser sandbox is intentionally exposed as `window.CameraPython` after it starts. This lets future browser-side preprocessing or a WASIX-compatible USR runtime be added without changing the product flow. Example from DevTools:
+
+```js
+await CameraPython.run("print(sum(i*i for i in range(10)))")
+```
+
+Public deployment:
+
+1. Push this repository to `main`.
+2. In **Settings → Pages**, choose **GitHub Actions** as the source.
+3. The **Publish interface** workflow installs the pinned Wasmer SDK, builds the browser bundle and publishes `dist/`.
+4. Optionally set repository variable `API_BASE_URL` to an HTTPS USR 2.0 reader. If omitted, the UI still starts Wasmer locally and explains that native USR inference needs a reader.
+
+For personal testing, a local reader can still be used at `http://localhost:8000`. Browsers may ask for local-network permission when a GitHub Pages tab contacts localhost.
 
 ## Host the reader
 
@@ -99,9 +109,10 @@ Transcripts stay in tab memory until refresh or Clear history. Only address and 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
-npm ci
+npm install
 npm test
 npm run check
+npm run build
 ```
 
 Frontend interaction tests use jsdom with mocked browser media/network APIs. Unit and API tests use a clearly named fake engine; they verify orchestration, validation, audio removal, cancellation and queue limits, **not recognition quality**. Real-model tests are separate. To smoke-test an actual video against a running reader:
@@ -114,7 +125,7 @@ The script uses `CAMERA_API_TOKEN` from the environment if needed. It prints the
 
 ## Project layout
 
-- `web/`: dependency-free static frontend, safe for a GitHub Pages project subpath.
+- `web/`: static frontend source plus the Wasmer browser-runtime entrypoint; Vite builds it for a GitHub Pages project subpath.
 - `server/engine.py`: persistent official-model adapter; only `xs_v` enters the encoder.
 - `server/media.py`: bounded FFmpeg normalization and audio stripping.
 - `server/app.py`: API, lifecycle, jobs, origin/auth controls and static hosting.
