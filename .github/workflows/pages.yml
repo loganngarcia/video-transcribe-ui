@@ -27,6 +27,8 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: python -c 'import json,os,pathlib; pathlib.Path("web/config.js").write_text("window.CAMERA_CONFIG = " + json.dumps({"apiBase":os.environ.get("API_BASE_URL", "")}) + ";\n")'
       - run: npm run build
+      - name: Include runtime configuration
+        run: cp web/config.js dist/config.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
