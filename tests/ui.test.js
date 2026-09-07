@@ -37,9 +37,14 @@ test('camera captures video without audio and stopping automatically transcribes
     await settle();w.document.getElementById('enable').click();await settle();
     assert.equal(state.mediaRequest.audio,false);
     const record=w.document.getElementById('record');assert.equal(record.disabled,false);
-    record.click();assert.equal(record.textContent,'Stop & transcribe');record.click();await settle();
+    record.click();assert.equal(record.textContent,'Stop & transcribe');record.click();
     assert.equal(w.document.getElementById('clip').hidden,false);
+    assert.equal(w.document.getElementById('busy').hidden,false);
+    assert.equal(w.document.getElementById('video-processing').hidden,false);
+    assert.equal(w.document.getElementById('result-tag').textContent,'TRANSCRIBING NOW');
+    assert.equal(w.document.getElementById('transcribe'),null);
     assert.ok(state.stopped>0);
+    await settle();
     assert.equal(w.document.getElementById('text').value,'UNIT TEST TRANSCRIPT');
   } finally {dom.window.close();}
 });
