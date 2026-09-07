@@ -93,6 +93,7 @@ async function buildFaceTracker() {
   await tf.setBackend('wasm');
   await tf.ready();
   if(tf.getBackend()!=='wasm') throw new Error('Could not start the WASM face tracker.');
+  window.__VIDEO_TRANSCRIBE_FACE_BACKEND__='tfjs-wasm';
   return faceLandmarksDetection.createDetector(
     faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
     {
