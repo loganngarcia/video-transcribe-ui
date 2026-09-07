@@ -29,7 +29,7 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Build production site
         run: npm run build
-      - name: Download real visual-speech sample
+      - name: Include runtime configuration\n        run: cp web/config.js dist/config.js\n      - name: Download real visual-speech sample
         run: curl -fL --retry 3 https://raw.githubusercontent.com/Sindhu-Hegde/multivsr/master/samples/GBfc471SoSo-00000.mp4 -o browser-smoke.mp4
       - name: Serve production build
         run: |
