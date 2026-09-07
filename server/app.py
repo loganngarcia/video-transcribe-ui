@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .engine import USREngine, VideoError
@@ -170,6 +170,14 @@ def create_app(engine_factory=USREngine):
             raise HTTPException(404, 'Session not found.')
         jobs[key].update(state='cancelled', result=None, updated=time.monotonic())
         return {'state': 'cancelled'}
+
+    @app.get('/coi-serviceworker.js', include_in_schema=False)
+    async def coi_serviceworker():
+        return FileResponse(
+            Path(__file__).resolve().parents[1] / 'web' / 'public' / 'coi-serviceworker.js',
+            media_type='application/javascript',
+            headers={'Cache-Control': 'no-cache'},
+        )
 
     app.mount('/', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'web', html=True), name='web')
     return app
