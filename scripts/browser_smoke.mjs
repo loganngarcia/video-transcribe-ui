@@ -20,6 +20,19 @@ await context.addInitScript(() => {
   try {
     Object.defineProperty(Navigator.prototype, 'gpu', {get: () => undefined});
   } catch {}
+  const htmlGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+    if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') return null;
+    return htmlGetContext.call(this, type, ...args);
+  };
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const offscreenGetContext = OffscreenCanvas.prototype.getContext;
+    OffscreenCanvas.prototype.getContext = function(type, ...args) {
+      if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') return null;
+      return offscreenGetContext.call(this, type, ...args);
+    };
+  }
+  window.__WEBGL_BLOCKED_FOR_TEST__ = true;
 });
 const page = await context.newPage();
 page.on('console', msg => console.log('[browser]', msg.type(), msg.text()));
@@ -42,8 +55,16 @@ try {
   await page.waitForFunction(
     () => document.querySelector('#connection-title')?.textContent?.includes('Ready to record'),
     null,
-    {timeout:180000},
+    {timeout:240000},
   );
+  const graphics = await page.evaluate(() => ({
+    webgl: document.createElement('canvas').getContext('webgl'),
+    backend: window.__VIDEO_TRANSCRIBE_FACE_BACKEND__,
+    blocked: window.__WEBGL_BLOCKED_FOR_TEST__ === true,
+  }));
+  if (graphics.webgl !== null || graphics.backend !== 'tfjs-wasm' || !graphics.blocked) {
+    throw new Error('WebGL-free face tracker was not active: ' + JSON.stringify(graphics));
+  }
 
   await page.waitForFunction(
     () => window.CameraPython?.info?.python,
@@ -99,6 +120,7 @@ try {
     connection,
     error,
     python,
+    graphics,
     isolated: await page.evaluate(()=>crossOriginIsolated),
   }, null, 2));
 
