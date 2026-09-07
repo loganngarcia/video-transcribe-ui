@@ -87,7 +87,11 @@ window.addEventListener('camera-browser-python', event => {
   if($('browser-runtime-detail')) $('browser-runtime-detail').textContent=detail.detail||'';
   if($('browser-runtime-dot')) $('browser-runtime-dot').classList.toggle('ready',runtimeStates.has(detail.state));
 });
-window.addEventListener('camera-model-progress', event => setupProgress(event.detail||{}));
+window.addEventListener('camera-model-progress', event => {
+  const detail=event.detail||{};
+  setupProgress(detail);
+  if(busy && detail.phase==='setup') processProgress(detail);
+});
 
 const headers = () => key ? {Authorization:`Bearer ${key}`} : {};
 async function api(path,options={},timeout=10000) {
@@ -370,6 +374,7 @@ function finish() {
   busy=false;jobId=null;
   $('busy').hidden=true;
   $('video-processing').hidden=true;
+  if(clip) $('video').controls=true;
   $('result').hidden=!selected;
   $('empty-result').hidden=!!selected;
   if(clip) $('new-video').hidden=false;
