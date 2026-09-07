@@ -17,7 +17,9 @@ let metadataPromise;
 let resourcesPromise;
 let modelBufferPromise;
 let sessionPromise;
+let wasmSessionPromise;
 let preloadPromise;
+let activeProvider = null;
 
 const clamp = (value,min=0,max=1) => Math.min(max,Math.max(min,value));
 const emit = (cb, detail) => {
@@ -26,7 +28,14 @@ const emit = (cb, detail) => {
 };
 const hardwareCores = () => Math.max(1,navigator.hardwareConcurrency || 2);
 const deviceMemory = () => navigator.deviceMemory || 4;
-const providerName = () => navigator.gpu ? 'WebGPU' : 'WASM';
+const forceWasm = () => {
+  try { return localStorage.getItem('video-transcribe-force-wasm') === '1'; } catch { return false; }
+};
+const canUseWebGPU = () => !!navigator.gpu && !forceWasm();
+const providerName = () => activeProvider || (canUseWebGPU() ? 'WebGPU' : 'WASM');
+const rememberWasmFallback = () => {
+  try { localStorage.setItem('video-transcribe-force-wasm','1'); } catch {}
+};
 
 function previousNumber(key) {
   try {
@@ -42,14 +51,14 @@ function compileEstimateMs() {
   if(previous) return previous;
   const coreFactor=Math.sqrt(4/hardwareCores());
   const memoryFactor=deviceMemory()<4 ? 1.35 : 1;
-  return (navigator.gpu ? 5500 : 10500)*coreFactor*memoryFactor;
+  return (canUseWebGPU() ? 5500 : 10500)*coreFactor*memoryFactor;
 }
 function inferenceEstimateMs(frames) {
   const previous=previousNumber('camera-vsr-ms-per-frame');
   if(previous) return previous*frames;
   const cores=hardwareCores();
   const memoryFactor=deviceMemory()<4 ? 1.3 : 1;
-  const perFrame=(navigator.gpu ? 24 : Math.max(45,95*(4/Math.min(8,cores))))*memoryFactor;
+  const perFrame=(canUseWebGPU() ? 24 : Math.max(45,95*(4/Math.min(8,cores))))*memoryFactor;
   return 800+perFrame*frames;
 }
 function initialNetworkBps() {
@@ -78,7 +87,9 @@ function metadata() {
 async function buildFaceTracker() {
   const vision=await FilesetResolver.forVisionTasks(VISION_WASM);
   return FaceLandmarker.createFromOptions(vision,{
-    baseOptions:{modelAssetPath:FACE_MODEL},
+    // Explicit CPU delegate avoids browser WebGL texture failures such as
+    // "activeTexture" on otherwise-supported Chrome/Edge configurations.
+    baseOptions:{modelAssetPath:FACE_MODEL,delegate:'CPU'},
     runningMode:'IMAGE',
     numFaces:1,
     minFaceDetectionConfidence:0.5,
@@ -190,27 +201,60 @@ function downloadModel(manifest,status) {
   return modelBufferPromise;
 }
 
+async function createInferenceSession(manifest,status,provider) {
+  ort.env.wasm.numThreads=Math.max(1,Math.min(4,hardwareCores()));
+  const buffer=await downloadModel(manifest,status);
+  const started=performance.now();
+  activeProvider=provider;
+  emit(status,{phase:'setup',stage:`Optimizing for ${provider}…`,progress:0.86,etaSeconds:etaTextSeconds(compileEstimateMs()),provider});
+  const session=await ort.InferenceSession.create(buffer,{
+    executionProviders:provider==='WebGPU'?['webgpu']:['wasm'],
+    graphOptimizationLevel:'all',
+    enableGraphCapture:false,
+  });
+  const created=performance.now();
+  emit(status,{phase:'setup',stage:'Checking transcription engine…',progress:0.96,etaSeconds:2,provider});
+  const warmup=new ort.Tensor('float32',new Float32Array(12*88*88),[1,12,88,88]);
+  await session.run({video:warmup});
+  saveNumber('camera-model-compile-ms',performance.now()-started);
+  saveNumber('camera-model-session-ms',created-started);
+  return session;
+}
+
+function wasmSession(manifest,status) {
+  if(!wasmSessionPromise) wasmSessionPromise=createInferenceSession(manifest,status,'WASM');
+  return wasmSessionPromise;
+}
+
 function modelSession(manifest,status) {
   if(sessionPromise) return sessionPromise;
   sessionPromise=(async()=>{
-    ort.env.wasm.numThreads=Math.max(1,Math.min(4,hardwareCores()));
-    const buffer=await downloadModel(manifest,status);
-    const started=performance.now();
-    emit(status,{phase:'setup',stage:`Optimizing for ${providerName()}…`,progress:0.86,etaSeconds:etaTextSeconds(compileEstimateMs()),provider:providerName()});
-    const session=await ort.InferenceSession.create(buffer,{
-      executionProviders:navigator.gpu?['webgpu','wasm']:['wasm'],
-      graphOptimizationLevel:'all',
-      enableGraphCapture:false,
-    });
-    const created=performance.now();
-    emit(status,{phase:'setup',stage:'Warming up transcription…',progress:0.96,etaSeconds:2,provider:providerName()});
-    const warmup=new ort.Tensor('float32',new Float32Array(12*88*88),[1,12,88,88]);
-    try { await session.run({video:warmup}); } catch {}
-    saveNumber('camera-model-compile-ms',performance.now()-started);
-    saveNumber('camera-model-session-ms',created-started);
-    return session;
+    if(!canUseWebGPU()) return wasmSession(manifest,status);
+    try {
+      return await createInferenceSession(manifest,status,'WebGPU');
+    } catch(error) {
+      console.warn('WebGPU initialization failed; switching Video Transcribe to WASM.',error);
+      rememberWasmFallback();
+      emit(status,{phase:'setup',stage:'Graphics acceleration unavailable. Switching to compatibility mode…',progress:0.95,etaSeconds:etaTextSeconds(compileEstimateMs()),provider:'WASM'});
+      return wasmSession(manifest,status);
+    }
   })();
   return sessionPromise;
+}
+
+async function runInferenceWithFallback(manifest,input,status) {
+  let session=await modelSession(manifest,status);
+  try {
+    return {output:await session.run({video:input}),provider:activeProvider||providerName()};
+  } catch(error) {
+    if((activeProvider||providerName())!=='WebGPU') throw error;
+    console.warn('WebGPU inference failed; retrying with WASM.',error);
+    rememberWasmFallback();
+    emit(status,{phase:'processing',stage:'Graphics acceleration stopped. Retrying safely…',progress:0.72,etaSeconds:etaTextSeconds(compileEstimateMs()),provider:'WASM'});
+    session=await wasmSession(manifest,status);
+    const output=await session.run({video:input});
+    return {output,provider:'WASM'};
+  }
 }
 
 export async function browserModelAvailable() {
@@ -306,7 +350,16 @@ async function extract(blob,landmarker,meanFace,status) {
     const started=performance.now();
     for(let i=0;i<count;i++){
       await seek(video,Math.min(duration-0.001,i/25));
-      const result=landmarker.detect(video);
+      let result;
+      try {
+        result=landmarker.detect(video);
+      } catch(error) {
+        const message=String(error?.message||error);
+        if(/activeTexture|webgl|texture|gpu/i.test(message)) {
+          throw new Error('Your browser graphics path failed while tracking the face. Video Transcribe now uses CPU face tracking; refresh once to load the compatibility fix.');
+        }
+        throw error;
+      }
       const face=result.faceLandmarks?.[0];
       let frame=null;
       if(face){frame=mouthFrame(video,face,meanFace,canvas,ctx);if(frame)found++;}
@@ -353,13 +406,14 @@ export async function transcribeLocally(blob,status) {
   emit(status,{phase:'processing',stage:'Getting transcription ready…',progress:0.01,etaSeconds:null});
   const prepared=await preloadLocalModel(status);
   const {manifest,tokens,meanFace,landmarker}=prepared.resources;
-  const session=prepared.session;
   const {tensor,count,coverage}=await extract(blob,landmarker,meanFace,status);
   const inferenceEstimate=inferenceEstimateMs(count);
-  emit(status,{phase:'processing',stage:'Transcribing video…',progress:0.66,etaSeconds:etaTextSeconds(inferenceEstimate)});
+  emit(status,{phase:'processing',stage:'Transcribing video…',progress:0.66,etaSeconds:etaTextSeconds(inferenceEstimate),provider:providerName()});
   const inferenceStarted=performance.now();
   const input=new ort.Tensor('float32',tensor,[1,count,88,88]);
-  const output=await session.run({video:input});
+  const inference=await runInferenceWithFallback(manifest,input,status);
+  const output=inference.output;
+  activeProvider=inference.provider;
   const inferenceMs=performance.now()-inferenceStarted;
   saveNumber('camera-vsr-ms-per-frame',inferenceMs/count);
   emit(status,{phase:'processing',stage:'Finishing transcript…',progress:0.96,etaSeconds:1});
@@ -374,7 +428,7 @@ export async function transcribeLocally(blob,status) {
     face_coverage:Math.round(coverage*100)/100,
     modality:'video',
     model:'USR 2.0 Base+ · on-device CTC',
-    mode:providerName(),
+    mode:activeProvider||providerName(),
     local:true,
     model_revision:manifest.revision,
   };
