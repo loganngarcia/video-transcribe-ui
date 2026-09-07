@@ -19,3 +19,14 @@
 #busy h3{margin-bottom:2px}
 #clip-name{font-weight:550;color:var(--ink)}
 @media(max-width:760px){.setup-card{padding:15px;gap:13px}.setup-ring{width:58px;height:58px;flex-basis:58px}.setup-card>button{padding:8px 10px}.setup-copy strong{font-size:14px}.setup-copy p{font-size:11px}}
+
+#video-processing{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(12px)}
+#video-processing strong{font-size:17px;letter-spacing:-.25px;margin-top:12px;color:var(--ink)}
+#video-processing p{font-size:12px;margin:4px 0 0;color:var(--muted);font-variant-numeric:tabular-nums}
+.video-process-ring{width:78px;height:78px;flex-basis:78px}.video-process-ring::before{inset:7px}
+#error-result{flex:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;padding:34px 24px}
+#error-result h3{font-size:25px;margin-bottom:4px}#error-result p{font-size:13px;max-width:38ch;margin:0 0 20px}
+#error-result .primary{min-width:130px}
+#clip{margin-top:12px;padding:12px 14px;border-radius:14px;background:color-mix(in srgb,var(--raised) 70%,transparent)}
+#clip p{margin:0;font-size:12px}
+#clip .controls{margin-top:10px}
