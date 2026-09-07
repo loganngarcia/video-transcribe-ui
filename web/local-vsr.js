@@ -1,4 +1,7 @@
-import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
+import * as faceLandmarksDetection from '@tensorflow-models/face-landmarks-detection';
+import * as tf from '@tensorflow/tfjs-core';
+import {setWasmPaths} from '@tensorflow/tfjs-backend-wasm';
+import '@tensorflow/tfjs-backend-wasm';
 import * as ort from 'onnxruntime-web/webgpu';
 
 const MP_TO_68 = [
@@ -9,8 +12,7 @@ const MP_TO_68 = [
 ];
 const STABLE = [28,33,36,39,42,45,48,54];
 const MODEL_ROOT = () => new URL('model/', document.baseURI);
-const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
-const VISION_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
+const TFJS_WASM_ROOT = () => new URL('assets/tfjs/', document.baseURI).href;
 const DOWNLOAD_CONCURRENCY = 4;
 
 let metadataPromise;
@@ -85,16 +87,43 @@ function metadata() {
 }
 
 async function buildFaceTracker() {
-  const vision=await FilesetResolver.forVisionTasks(VISION_WASM);
-  return FaceLandmarker.createFromOptions(vision,{
-    // Explicit CPU delegate avoids browser WebGL texture failures such as
-    // "activeTexture" on otherwise-supported Chrome/Edge configurations.
-    baseOptions:{modelAssetPath:FACE_MODEL,delegate:'CPU'},
-    runningMode:'IMAGE',
-    numFaces:1,
-    minFaceDetectionConfidence:0.5,
-    minFacePresenceConfidence:0.5,
+  // Do not register or use the TFJS WebGL backend. This tracker stays on WASM,
+  // so face input never passes through MediaPipe Tasks Web's WebGL texture path.
+  setWasmPaths(TFJS_WASM_ROOT());
+  await tf.setBackend('wasm');
+  await tf.ready();
+  if(tf.getBackend()!=='wasm') throw new Error('Could not start the WASM face tracker.');
+  return faceLandmarksDetection.createDetector(
+    faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+    {
+      runtime:'tfjs',
+      maxFaces:1,
+      refineLandmarks:true,
+    }
+  );
+}
+
+function sourceSize(source) {
+  return [
+    source.videoWidth||source.naturalWidth||source.displayWidth||source.width,
+    source.videoHeight||source.naturalHeight||source.displayHeight||source.height,
+  ];
+}
+
+async function detectLandmarks(detector,source,{staticImageMode=false}={}) {
+  const [width,height]=sourceSize(source);
+  if(!width||!height) return null;
+  const faces=await detector.estimateFaces(source,{
+    flipHorizontal:false,
+    staticImageMode,
   });
+  const points=faces?.[0]?.keypoints;
+  if(!points || points.length<468) return null;
+  return points.map(point=>({
+    x:point.x/width,
+    y:point.y/height,
+    z:(point.z||0)/width,
+  }));
 }
 
 function resources() {
@@ -409,8 +438,7 @@ async function extractCapturedImages(capture,landmarker,meanFace,status) {
     let bitmap;
     try {
       bitmap=await createImageBitmap(item.blob);
-      const result=landmarker.detect(bitmap);
-      const face=result.faceLandmarks?.[0];
+      const face=await detectLandmarks(landmarker,bitmap,{staticImageMode:i===0});
       let frame=null;
       if(face) {
         frame=mouthFrame(bitmap,face,meanFace,canvas,ctx);
@@ -467,17 +495,7 @@ async function extract(blob,landmarker,meanFace,status) {
     const started=performance.now();
     for(let i=0;i<count;i++){
       await seek(video,Math.min(duration-0.001,i/25));
-      let result;
-      try {
-        result=landmarker.detect(video);
-      } catch(error) {
-        const message=String(error?.message||error);
-        if(/activeTexture|webgl|texture|gpu/i.test(message)) {
-          throw new Error('Your browser graphics path failed while tracking the face. Video Transcribe now uses CPU face tracking; refresh once to load the compatibility fix.');
-        }
-        throw error;
-      }
-      const face=result.faceLandmarks?.[0];
+      const face=await detectLandmarks(landmarker,video,{staticImageMode:i===0});
       let frame=null;
       if(face){frame=mouthFrame(video,face,meanFace,canvas,ctx);if(frame)found++;}
       if(!frame&&last) frame=last.slice();
