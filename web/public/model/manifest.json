@@ -1,0 +1,54 @@
+{
+  "format": 1,
+  "model": "USR 2.0 Base+ visual encoder + CTC head",
+  "upstream": "https://github.com/ahaliassos/usr2",
+  "revision": "df0c78b7a3807e625a0fcdadd14b1cf674d21c91",
+  "checkpoint_sha256": "4ab1f3f230aa6a724bcc698db8a17f2f54919136d2885c1a07a6b69247012773",
+  "onnx_sha256": "48e2e274c21e2953c8f694839bdf75b1f44ff4b332dd436977c2c3f67cfad476",
+  "onnx_bytes": 224984858,
+  "input": {
+    "name": "video",
+    "dtype": "float32",
+    "shape": [
+      "batch",
+      "frames",
+      88,
+      88
+    ],
+    "normalization": {
+      "mean": 0.421,
+      "std": 0.165
+    }
+  },
+  "output": {
+    "name": "logits",
+    "tokens": 1049
+  },
+  "parts": [
+    {
+      "file": "usr2-baseplus-ctc-fp16.onnx.part000",
+      "bytes": 50331648,
+      "sha256": "00fe2e8e08cb8193f1a5ccceeee834249e76c1d347cd3a1d80e14b74aafe8715"
+    },
+    {
+      "file": "usr2-baseplus-ctc-fp16.onnx.part001",
+      "bytes": 50331648,
+      "sha256": "0d4fbb6356d29e3c32f32a81a4708bc99ea87ea38c57dfab243b962847d6fbaa"
+    },
+    {
+      "file": "usr2-baseplus-ctc-fp16.onnx.part002",
+      "bytes": 50331648,
+      "sha256": "dfc189d9ccf595ac805b340caeda8e314b57357a66f4bd94ff394c069781e1ca"
+    },
+    {
+      "file": "usr2-baseplus-ctc-fp16.onnx.part003",
+      "bytes": 50331648,
+      "sha256": "cdfc30e3f42c43961a33111c32535c46b9c00a0e91e4c94e2b9e978193e05a18"
+    },
+    {
+      "file": "usr2-baseplus-ctc-fp16.onnx.part004",
+      "bytes": 23658266,
+      "sha256": "236d5e4efa9fe82c13a9d599932098870c858bd5f3919199be0519939b704f07"
+    }
+  ]
+}
