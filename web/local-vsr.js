@@ -351,6 +351,7 @@ export async function startLiveMouthCapture(video) {
   let last=null;
   let running=true;
   let raf=0;
+  let captureError=null;
   let nextAt=performance.now();
 
   const captureFrame=()=>{
@@ -373,8 +374,8 @@ export async function startLiveMouthCapture(video) {
           last=frame;
         }
       } catch(error) {
+        captureError=error;
         running=false;
-        throw error;
       }
     }
     if(running) raf=requestAnimationFrame(captureFrame);
@@ -386,6 +387,7 @@ export async function startLiveMouthCapture(video) {
     stop() {
       running=false;
       if(raf) cancelAnimationFrame(raf);
+      if(captureError) throw captureError;
       if(attempted<12 || frames.length<12) {
         throw new Error('The camera recording was too short to read. Record at least half a second.');
       }
