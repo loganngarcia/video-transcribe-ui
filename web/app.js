@@ -23,6 +23,9 @@ function friendlyError(error) {
       raw
     };
   }
+  if(/Cannot read properties|TypeError|undefined|is not a function/i.test(raw)) {
+    return {message:'A browser runtime component stopped unexpectedly. Video Transcribe can retry this same video in compatibility mode.',raw};
+  }
   if(/memory|out of memory|allocation/i.test(raw)) {
     return {message:'This browser ran out of memory while processing the video. Close other heavy tabs and try a shorter recording.',raw};
   }
@@ -502,11 +505,17 @@ $('retry').onclick=()=>{
   $('error-result').hidden=true;
   void transcribeClip();
 };
-$('compatibility-retry').onclick=()=>{
-  try {localStorage.setItem('video-transcribe-force-wasm','1');} catch {}
+$('compatibility-retry').onclick=async()=>{
   $('error-result').hidden=true;
-  notice('Compatibility mode enabled. Retrying with CPU/WASM.');
-  location.reload();
+  notice('Switching to CPU/WASM compatibility mode and retrying this video…');
+  try {
+    const runtime=await import('./local-vsr.js');
+    runtime.enableCompatibilityMode();
+    await transcribeClip();
+  } catch(error) {
+    showTranscriptionError(error);
+    $('error-result').hidden=false;
+  }
 };
 $('cancel').onclick=()=>{
   cancelRequested=true;
