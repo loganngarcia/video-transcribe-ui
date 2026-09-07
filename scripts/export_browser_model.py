@@ -100,7 +100,7 @@ def main():
     print("Converting weights/operators to FP16...", flush=True)
     graph16=float16.convert_float_to_float16(
         graph,
-        keep_io_types=False,
+        keep_io_types=True,
         disable_shape_infer=False,
         op_block_list=["Resize"],
     )
