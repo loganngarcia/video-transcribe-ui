@@ -332,12 +332,12 @@ $('record').onclick=async()=>{
       stopCamera();
       notice('Recording failed. Try recording again.');
     };
-    recorder.onstop=()=>{
+    recorder.onstop=async()=>{
       clearInterval(timer);
       $('timer').hidden=true;
       let cameraFrames=null;
       if(liveCaptureSession) {
-        try { cameraFrames=liveCaptureSession.stop(); }
+        try { cameraFrames=await liveCaptureSession.stop(); }
         catch(error) {
           console.warn('Live camera frame capture was incomplete; using the finalized recording fallback.',error);
           cameraFrames=null;
