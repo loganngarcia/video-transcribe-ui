@@ -340,6 +340,72 @@ async function seek(video,time) {
   });
 }
 
+export async function startLiveMouthCapture(video) {
+  const prepared=await preloadLocalModel();
+  const {landmarker,meanFace}=prepared.resources;
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const frames=[];
+  let found=0;
+  let attempted=0;
+  let last=null;
+  let running=true;
+  let raf=0;
+  let nextAt=performance.now();
+
+  const captureFrame=()=>{
+    if(!running) return;
+    const now=performance.now();
+    if(now>=nextAt && attempted<500 && video.readyState>=2 && video.videoWidth>0) {
+      nextAt+=40;
+      attempted++;
+      try {
+        const result=landmarker.detect(video);
+        const face=result.faceLandmarks?.[0];
+        let frame=null;
+        if(face) {
+          frame=mouthFrame(video,face,meanFace,canvas,ctx);
+          if(frame) found++;
+        }
+        if(!frame && last) frame=last.slice();
+        if(frame) {
+          frames.push(frame);
+          last=frame;
+        }
+      } catch(error) {
+        running=false;
+        throw error;
+      }
+    }
+    if(running) raf=requestAnimationFrame(captureFrame);
+  };
+
+  raf=requestAnimationFrame(captureFrame);
+
+  return {
+    stop() {
+      running=false;
+      if(raf) cancelAnimationFrame(raf);
+      if(attempted<12 || frames.length<12) {
+        throw new Error('The camera recording was too short to read. Record at least half a second.');
+      }
+      const coverage=found/attempted;
+      if(coverage<0.6) {
+        throw new Error('Your face was not clearly visible for enough of the recording. Keep your whole face in view and try again.');
+      }
+      while(frames.length<attempted && last) frames.push(last.slice());
+      const count=frames.length;
+      const tensor=new Float32Array(count*88*88);
+      frames.forEach((frame,index)=>tensor.set(frame,index*88*88));
+      return {tensor,count,coverage,source:'live-camera'};
+    },
+    cancel() {
+      running=false;
+      if(raf) cancelAnimationFrame(raf);
+    }
+  };
+}
+
 async function extract(blob,landmarker,meanFace,status) {
   const video=document.createElement('video');
   video.muted=true;video.playsInline=true;video.preload='auto';
@@ -408,12 +474,16 @@ function greedyCTC(output,tokens) {
   return ids.map(id=>tokens[id]||'').join('').replaceAll('▁',' ').replaceAll('<space>',' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
 }
 
-export async function transcribeLocally(blob,status) {
+export async function transcribeLocally(blob,status,preparedFrames=null) {
   const started=performance.now();
   emit(status,{phase:'processing',stage:'Getting transcription ready…',progress:0.01,etaSeconds:null});
   const prepared=await preloadLocalModel(status);
   const {manifest,tokens,meanFace,landmarker}=prepared.resources;
-  const {tensor,count,coverage}=await extract(blob,landmarker,meanFace,status);
+  const frameData=preparedFrames || await extract(blob,landmarker,meanFace,status);
+  const {tensor,count,coverage}=frameData;
+  if(preparedFrames) {
+    emit(status,{phase:'processing',stage:'Camera frames ready · starting transcription…',progress:0.63,etaSeconds:etaTextSeconds(inferenceEstimateMs(count))});
+  }
   const inferenceEstimate=inferenceEstimateMs(count);
   emit(status,{phase:'processing',stage:'Transcribing video…',progress:0.66,etaSeconds:etaTextSeconds(inferenceEstimate),provider:providerName()});
   const inferenceStarted=performance.now();
