@@ -31,22 +31,23 @@ function setup() {
   vm.runInContext(core+'\n'+app,dom.getInternalVMContext());
   return {dom,w,calls,get mediaRequest(){return mediaRequest;},get stopped(){return stopped;}};
 }
-test('camera captures video without audio, creates preview and releases tracks',async()=>{
+test('camera captures video without audio and stopping automatically transcribes',async()=>{
   const state=setup(),{w,dom}=state;
   try {
     await settle();w.document.getElementById('enable').click();await settle();
     assert.equal(state.mediaRequest.audio,false);
     const record=w.document.getElementById('record');assert.equal(record.disabled,false);
-    record.click();assert.equal(record.textContent,'Stop recording');record.click();
+    record.click();assert.equal(record.textContent,'Stop & transcribe');record.click();await settle();
     assert.equal(w.document.getElementById('clip').hidden,false);
-    assert.ok(state.stopped>0);assert.equal(w.document.getElementById('transcribe').disabled,false);
+    assert.ok(state.stopped>0);
+    assert.equal(w.document.getElementById('text').value,'UNIT TEST TRANSCRIPT');
   } finally {dom.window.close();}
 });
 test('transcription uses real job protocol and clears retrieved server output',async()=>{
   const {w,dom,calls}=setup();
   try {
     await settle();w.document.getElementById('enable').click();await settle();
-    w.document.getElementById('record').click();w.document.getElementById('record').click();w.document.getElementById('transcribe').click();await settle();
+    w.document.getElementById('record').click();w.document.getElementById('record').click();await settle();
     assert.equal(w.document.getElementById('text').value,'UNIT TEST TRANSCRIPT');
     assert.ok(calls.some(c=>c.options.method==='DELETE'&&c.url.endsWith('/api/jobs/fixture-id')));
     assert.equal(w.document.getElementById('copy').disabled,false);
