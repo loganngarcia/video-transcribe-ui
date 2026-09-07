@@ -1,0 +1,27 @@
+{
+  "fixture": "https://github.com/Sindhu-Hegde/multivsr/blob/master/samples/GBfc471SoSo-00000.mp4",
+  "duration_seconds": 4.03,
+  "health": {
+    "status": "ready",
+    "message": "Ready to read your clip.",
+    "version": 1,
+    "modality": "video",
+    "model": "USR 2.0",
+    "device": "cpu",
+    "max_seconds": 20,
+    "max_bytes": 52428800
+  },
+  "result": {
+    "text": "THIS IS PART OF THE PARADISE PAPERS THAT CAME OUT THIS WEEKEND",
+    "alternatives": [
+      "THIS IS PART OF THE PARADISE PAPER THAT CAME OUT THIS WEEKEND",
+      "SO THIS IS PART OF THE PARADISE PAPERS THAT CAME OUT THIS WEEKEND"
+    ],
+    "seconds": 36.98,
+    "face_coverage": 1.0,
+    "modality": "video",
+    "model": "USR 2.0 huge",
+    "mode": "balanced"
+  },
+  "http_elapsed_seconds": 38.24
+}
