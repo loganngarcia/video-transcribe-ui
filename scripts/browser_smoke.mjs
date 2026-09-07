@@ -42,8 +42,13 @@ try {
   if (python.output !== '42') throw new Error('Wasmer CPython smoke failed: ' + JSON.stringify(python));
 
   await page.setInputFiles('#file', sample);
-  await page.waitForFunction(() => document.querySelector('#clip')?.hidden === false, null, {timeout:30000});
-  await page.click('#transcribe');
+  await page.waitForFunction(
+    () => document.querySelector('#busy')?.hidden === false &&
+          document.querySelector('#video-processing')?.hidden === false &&
+          document.querySelector('#result-tag')?.textContent?.includes('TRANSCRIBING'),
+    null,
+    {timeout:30000},
+  );
 
   await page.waitForFunction(() => {
     const result = document.querySelector('#result');
