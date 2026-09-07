@@ -87,11 +87,13 @@ try {
   }, null, {timeout:900000});
 
   const transcript = await page.inputValue('#text');
+  const inputSource = await page.getAttribute('#result','data-input-source');
   const notice = await page.textContent('#notice');
   const connection = await page.textContent('#connection-detail');
   const error = await page.textContent('#error-message');
   console.log(JSON.stringify({
     flow,
+    inputSource,
     transcript,
     notice,
     connection,
@@ -100,6 +102,7 @@ try {
     isolated: await page.evaluate(()=>crossOriginIsolated),
   }, null, 2));
 
+  if (flow==='camera' && inputSource!=='live-camera') throw new Error('Camera flow fell back to re-decoding the recording instead of live frames: ' + inputSource);
   if (!transcript.trim()) throw new Error('Browser VSR returned an empty transcript: ' + (error || notice));
   if ((transcript.trim().match(/\S+/g) || []).length < 2) throw new Error('Browser VSR returned fewer than two words: ' + transcript);
 } finally {
