@@ -69,16 +69,15 @@ function setupProgress(detail={}) {
   $('technical-reader-detail').textContent=`USR 2.0 Base+ · ${detail.provider || (navigator.gpu?'WebGPU':'WASM')} · on-device`;
 }
 function processProgress(detail={}) {
-  if(detail.phase==='setup') {
-    const mapped=(detail.progress || 0)*0.18;
-    setRing('process-ring',mapped,'process-percent');
-    $('stage').textContent=detail.stage || 'Finishing transcription setup…';
-    $('process-eta').textContent=formatEta(detail.etaSeconds);
-    return;
-  }
-  setRing('process-ring',detail.progress,'process-percent');
-  if(detail.stage) $('stage').textContent=detail.stage;
+  let progress=detail.progress || 0;
+  let stage=detail.stage || 'Transcribing automatically…';
+  if(detail.phase==='setup') progress*=0.18;
+  setRing('process-ring',progress,'process-percent');
+  setRing('video-process-ring',progress,'video-process-percent');
+  $('stage').textContent=stage;
   $('process-eta').textContent=formatEta(detail.etaSeconds);
+  $('video-process-title').textContent=stage;
+  $('video-process-detail').textContent=formatEta(detail.etaSeconds);
 }
 
 const runtimeStates = new Set(['ready','partial']);
@@ -107,8 +106,7 @@ function controls() {
   $('record').disabled=!stream || busy;
   $('record').textContent=recording ? 'Stop & transcribe' : 'Start recording';
   $('upload').disabled=busy || recording;
-  $('transcribe').disabled=!clip || busy || (!localReader && !ready) || (localReader && modelFailed);
-  $('discard').disabled=busy;
+  if($('new-video')) $('new-video').disabled=busy;
   $('enable').disabled=busy || acquiring;
   $('settings-open').disabled=busy;
   $('connect').disabled=busy;
@@ -225,6 +223,8 @@ function clearClip() {
   $('video').removeAttribute('src');
   $('video').controls=false;
   $('clip').hidden=true;
+  if($('new-video')) $('new-video').hidden=true;
+  $('video-processing').hidden=true;
   $('camera-empty').hidden=!!stream;
   controls();
 }
@@ -256,24 +256,20 @@ $('enable').onclick=async()=>{
 };
 $('camera-off').onclick=stopCamera;
 
-function selectClip(blob,name,{auto=false}={}) {
+function selectClip(blob,name,{source='video'}={}) {
   clearClip();
   clip=blob;
   stopCamera();
   previewURL=URL.createObjectURL(blob);
   $('video').src=previewURL;
-  $('video').controls=true;
+  $('video').controls=false;
   $('video').muted=true;
   $('camera-empty').hidden=true;
-  $('clip-name').textContent=auto?'Recording finished · transcription starting automatically':name;
+  $('clip-name').textContent=`${name} · transcription started automatically`;
   $('clip').hidden=false;
-  controls();
-  if(auto) {
-    notice('Recording finished. Transcription is starting automatically.');
-    queueMicrotask(transcribeClip);
-  } else {
-    notice('Video ready. Press Transcribe uploaded video.');
-  }
+  $('new-video').hidden=true;
+  notice(source==='recording'?'Recording stopped. Transcribing automatically now.':'Video selected. Transcribing automatically now.');
+  void transcribeClip();
 }
 
 $('record').onclick=()=>{
@@ -291,7 +287,7 @@ $('record').onclick=()=>{
     recorder.onstop=()=>{
       clearInterval(timer);
       $('timer').hidden=true;
-      selectClip(new Blob(chunks,{type:recorder.mimeType}),'Your recording',{auto:true});
+      selectClip(new Blob(chunks,{type:recorder.mimeType}),'Recording complete',{source:'recording'});
     };
     recorder.start(500);
     const started=performance.now();
@@ -323,7 +319,7 @@ async function upload(file) {
       probe.src=url;
     });
     if(probe.duration>20.3||probe.duration<0.4) throw new Error('Choose a video between half a second and 20 seconds.');
-    selectClip(new Blob([file],{type}),file.name);
+    selectClip(new Blob([file],{type}),file.name,{source:'upload'});
   } catch(error) {
     notice(error.message);
   } finally {
@@ -335,7 +331,11 @@ $('file').onchange=()=>{upload($('file').files[0]);$('file').value='';};
 $('dropzone').ondragover=event=>{event.preventDefault();$('dropzone').classList.add('drag');};
 $('dropzone').ondragleave=()=>$('dropzone').classList.remove('drag');
 $('dropzone').ondrop=event=>{event.preventDefault();$('dropzone').classList.remove('drag');upload(event.dataTransfer.files[0]);};
-$('discard').onclick=()=>{clearClip();notice('Video discarded.');};
+$('new-video').onclick=()=>{
+  clearClip();
+  notice('Ready for another recording.');
+  $('enable').click();
+};
 
 function resultControls() {
   const hasText=!!$('text').value.trim()&&!busy;
@@ -369,8 +369,10 @@ function show(item) {
 function finish() {
   busy=false;jobId=null;
   $('busy').hidden=true;
+  $('video-processing').hidden=true;
   $('result').hidden=!selected;
   $('empty-result').hidden=!!selected;
+  if(clip) $('new-video').hidden=false;
   controls();resultControls();
 }
 function acceptResult(item) {
@@ -382,17 +384,37 @@ function acceptResult(item) {
 
 async function transcribeClip() {
   if(!clip||busy) return;
-  if(!localReader&&!ready) return notice('The connected reader is not ready yet.');
-  if(localReader&&modelFailed) return notice('On-device transcription could not start. Open Options to use a connected reader.');
+  if(!localReader&&!ready) {
+    $('error-result').hidden=false;
+    $('error-message').textContent='The connected reader is not ready. Check Options and try again.';
+    $('empty-result').hidden=true;
+    $('result').hidden=true;
+    $('result-tag').textContent='NEEDS ATTENTION';
+    return;
+  }
+  if(localReader&&modelFailed) {
+    $('error-result').hidden=false;
+    $('error-message').textContent='On-device transcription could not start. Open Options to use a connected reader.';
+    $('empty-result').hidden=true;
+    $('result').hidden=true;
+    $('result-tag').textContent='NEEDS ATTENTION';
+    return;
+  }
 
   busy=true;cancelRequested=false;
+  $('error-result').hidden=true;
   $('busy').hidden=false;
+  $('video-processing').hidden=false;
   $('result').hidden=true;
   $('empty-result').hidden=true;
-  $('result-tag').textContent='TRANSCRIBING';
+  $('new-video').hidden=true;
+  $('result-tag').textContent='TRANSCRIBING NOW';
   setRing('process-ring',0.01,'process-percent');
-  $('stage').textContent=localReader?'Preparing video…':'Uploading video…';
+  setRing('video-process-ring',0.01,'video-process-percent');
+  $('stage').textContent=localReader?'Transcribing automatically…':'Uploading and transcribing…';
   $('process-eta').textContent='Estimating time remaining…';
+  $('video-process-title').textContent='Transcribing automatically…';
+  $('video-process-detail').textContent='Starting now…';
   controls();resultControls();
 
   try {
@@ -436,12 +458,23 @@ async function transcribeClip() {
     throw new Error('The reader is taking too long. Try a shorter video.');
   } catch(error) {
     if(jobId) await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});
-    notice(error.message||'Transcription failed. Try again.');
-    $('result-tag').textContent='TRY AGAIN';
-    finish();
+    busy=false;jobId=null;
+    $('busy').hidden=true;
+    $('video-processing').hidden=true;
+    $('result').hidden=true;
+    $('empty-result').hidden=true;
+    $('error-result').hidden=false;
+    $('error-message').textContent=error.message||'Transcription failed. Try again.';
+    $('result-tag').textContent='NEEDS ATTENTION';
+    if(clip) $('new-video').hidden=false;
+    notice('Transcription did not finish. Use Try again or record another video.');
+    controls();resultControls();
   }
 }
-$('transcribe').onclick=transcribeClip;
+$('retry').onclick=()=>{
+  $('error-result').hidden=true;
+  void transcribeClip();
+};
 $('cancel').onclick=()=>{
   cancelRequested=true;
   $('stage').textContent=localReader?'Stopping after the current local step…':'Cancelling…';
@@ -472,7 +505,7 @@ $('clear').onclick=()=>{
   $('text').value='';$('original').textContent='';$('alternatives').replaceChildren();$('elapsed').textContent='';
   $('result-tag').textContent='WAITING FOR VIDEO';
   window.speechSynthesis?.cancel();
-  $('result').hidden=true;$('empty-result').hidden=false;
+  $('result').hidden=true;$('error-result').hidden=true;$('empty-result').hidden=false;
   renderHistory();resultControls();notice('Session history cleared.');
 };
 
