@@ -9,8 +9,14 @@
   },
   "dependencies": {
     "@wasmer/sdk": "0.11.0",
-    "@mediapipe/tasks-vision": "1.0.1",
-    "onnxruntime-web": "1.29.0"
+    "onnxruntime-web": "1.29.0",
+    "@tensorflow-models/face-landmarks-detection": "1.0.6",
+    "@tensorflow-models/face-detection": "1.0.3",
+    "@tensorflow/tfjs-core": "4.22.0",
+    "@tensorflow/tfjs-converter": "4.22.0",
+    "@tensorflow/tfjs-backend-wasm": "4.22.0",
+    "@tensorflow/tfjs-backend-webgl": "4.22.0",
+    "@mediapipe/face_mesh": "0.4.1633559619"
   },
   "devDependencies": {
     "jsdom": "26.1.0",
