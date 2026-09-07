@@ -257,6 +257,13 @@ async function runInferenceWithFallback(manifest,input,status) {
   }
 }
 
+export function enableCompatibilityMode() {
+  rememberWasmFallback();
+  activeProvider=wasmSessionPromise?'WASM':null;
+  sessionPromise=wasmSessionPromise || null;
+  preloadPromise=null;
+}
+
 export async function browserModelAvailable() {
   try {
     const response=await fetch(new URL('manifest.json',MODEL_ROOT()),{method:'HEAD',cache:'no-cache'});
