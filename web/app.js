@@ -462,6 +462,7 @@ async function transcribeClip() {
   }
 
   busy=true;cancelRequested=false;
+  document.body.dataset.transcriptionStarted='true';
   $('error-result').hidden=true;
   $('busy').hidden=false;
   $('video-processing').hidden=false;
