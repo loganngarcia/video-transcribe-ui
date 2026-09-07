@@ -99,7 +99,7 @@ async function buildFaceTracker() {
     {
       runtime:'tfjs',
       maxFaces:1,
-      refineLandmarks:true,
+      refineLandmarks:false,
     }
   );
 }
