@@ -496,7 +496,8 @@ export async function transcribeLocally(blob,status,preparedFrames=null) {
   const inferenceMs=performance.now()-inferenceStarted;
   saveNumber('camera-vsr-ms-per-frame',inferenceMs/count);
   emit(status,{phase:'processing',stage:'Finishing transcript…',progress:0.96,etaSeconds:1});
-  const logits=output.logits||output[session.outputNames[0]];
+  const logits=output.logits||Object.values(output)[0];
+  if(!logits) throw new Error('The transcription engine returned no output.');
   const text=greedyCTC(logits,tokens);
   if(!text) throw new Error('No words recognized. Try a short, clear sentence in good light.');
   emit(status,{phase:'processing',stage:'Transcript ready',progress:1,etaSeconds:0,ready:true});
@@ -509,6 +510,7 @@ export async function transcribeLocally(blob,status,preparedFrames=null) {
     model:'USR 2.0 Base+ · on-device CTC',
     mode:activeProvider||providerName(),
     local:true,
+    input_source:preparedFrames?'live-camera':'decoded-video',
     model_revision:manifest.revision,
   };
 }
