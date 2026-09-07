@@ -1,202 +1,487 @@
 import {endpointURL, wordCount, clock, videoType} from './core.js';
+
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let prefs = {};
 try { prefs = JSON.parse(localStorage.getItem('camera-preferences') || '{}'); } catch {}
-const local = ['localhost','127.0.0.1'].includes(location.hostname);
-let endpoint = prefs.endpoint || window.CAMERA_CONFIG?.apiBase || (local ? location.origin : 'http://localhost:8000');
-let mode = prefs.mode || 'balanced', readerKind = prefs.readerKind || (local ? 'server' : 'local'), key = '', ready = false, localReader = false, busy = false, stream, recorder, clip, previewURL, jobId, cancelRequested = false, timer, connectEpoch = 0;
+
+const localHost = ['localhost','127.0.0.1'].includes(location.hostname);
+let endpoint = prefs.endpoint || window.CAMERA_CONFIG?.apiBase || (localHost ? location.origin : 'http://localhost:8000');
+let mode = prefs.mode || 'balanced';
+let readerKind = prefs.readerKind || (localHost ? 'server' : 'local');
+let key = '', ready = false, localReader = false, modelFailed = false, busy = false;
+let stream, recorder, clip, previewURL, jobId, timer, connectEpoch = 0;
+let cancelRequested = false, selected, acquiring = false, localPreloadPromise;
 const history = [];
-let selected, acquiring = false;
+
 const notice = message => { $('notice').textContent = message; };
-const runtimeStates = new Set(['ready','partial']);
-window.addEventListener('camera-browser-python', event => {
-  const detail=event.detail||{};
-  const title=$('browser-runtime-title'), info=$('browser-runtime-detail'), dot=$('browser-runtime-dot');
-  if(title) title.textContent=detail.title||'Browser Python';
-  if(info) info.textContent=detail.detail||'';
-  if(dot) dot.classList.toggle('ready',runtimeStates.has(detail.state));
-});
-const headers = () => key ? {Authorization:`Bearer ${key}`} : {};
-async function api(path, options = {}, timeout = 10000) {
-  const response = await fetch(endpoint + path, {...options, headers:{...headers(),...options.headers}, signal:AbortSignal.timeout(timeout)});
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || 'The reader could not complete this request.');
-  return data;
+const percent = value => Math.max(0,Math.min(100,Math.round((value || 0)*100)));
+const formatBytes = bytes => {
+  if(!Number.isFinite(bytes) || bytes <= 0) return '';
+  return bytes >= 1024**2 ? `${Math.round(bytes/(1024**2))} MB` : `${Math.round(bytes/1024)} KB`;
+};
+const formatEta = seconds => {
+  if(seconds == null || !Number.isFinite(seconds)) return 'Estimating time remaining…';
+  if(seconds <= 0) return 'Ready';
+  if(seconds < 60) return `About ${Math.max(1,Math.round(seconds))} sec remaining`;
+  return `About ${Math.ceil(seconds/60)} min remaining`;
+};
+function setRing(id,value,labelId) {
+  const valuePercent=percent(value);
+  const ring=$(id);
+  if(!ring) return;
+  ring.style.setProperty('--progress',String(valuePercent));
+  ring.setAttribute('aria-valuenow',String(valuePercent));
+  if(labelId && $(labelId)) $(labelId).textContent=valuePercent>=100?'✓':`${valuePercent}%`;
+  ring.classList.toggle('complete',valuePercent>=100);
 }
-function controls() {
-  const recording = recorder?.state === 'recording';
-  $('record').disabled = !stream || busy;
-  $('record').textContent = recording ? 'Stop recording' : 'Start recording';
-  $('upload').disabled = busy || recording;
-  $('transcribe').disabled = !clip || !ready || busy;
-  $('discard').disabled = busy;
-  $('enable').disabled = busy || acquiring;
-  $('settings-open').disabled = busy;
-  $('connect').disabled = busy;
-}
-async function connect() {
-  const epoch = ++connectEpoch;
-  ready = false; localReader = false; controls();
-  $('connection-title').textContent = readerKind === 'local' ? 'Checking this device…' : 'Connecting to your reader…';
-  $('connection-dot').classList.remove('ready');
-  if (readerKind === 'local') {
-    try {
-      const response = await fetch(new URL('model/manifest.json', document.baseURI), {method:'HEAD', cache:'no-cache'});
-      if (epoch !== connectEpoch) return;
-      localReader = response.ok;
-      ready = localReader;
-      $('connection-title').textContent = ready ? 'On-device USR is ready' : 'On-device model is still being prepared';
-      $('connection-detail').textContent = ready
-        ? `USR 2.0 Base+ runs in this browser · ${navigator.gpu ? 'WebGPU' : 'WASM'} · your video stays on this device`
-        : 'Open Settings and choose a connected reader if you want to transcribe before the browser model is available.';
-      $('connection-dot').classList.toggle('ready', ready);
-    } catch {
-      if (epoch !== connectEpoch) return;
-      $('connection-title').textContent = 'On-device reader unavailable';
-      $('connection-detail').textContent = 'Open Settings and choose a connected reader.';
-    }
+function setupProgress(detail={}) {
+  if(detail.phase && detail.phase!=='setup') return;
+  setRing('setup-ring',detail.progress,'setup-percent');
+  if(detail.ready) {
+    ready=true;modelFailed=false;
+    $('connection-title').textContent='Ready to record';
+    $('connection-detail').textContent='Everything needed for on-device transcription is loaded.';
+    $('setup-eta').textContent='Your video stays on this device.';
+    $('connection-dot').classList.add('ready');
+    $('technical-reader-detail').textContent=`USR 2.0 Base+ · ${detail.provider || (navigator.gpu?'WebGPU':'WASM')} · local video only`;
     controls();
     return;
   }
+  if(detail.error) {
+    ready=false;modelFailed=true;
+    $('connection-title').textContent='Transcription setup failed';
+    $('connection-detail').textContent=detail.error;
+    $('setup-eta').textContent='Open Options to use a connected reader instead.';
+    $('connection-dot').classList.remove('ready');
+    controls();
+    return;
+  }
+  $('connection-title').textContent=detail.stage || 'Preparing transcription';
+  const loaded=detail.bytesLoaded, total=detail.bytesTotal;
+  if(loaded && total) {
+    const speed=detail.speedBps ? ` · ${(detail.speedBps/(1024**2)).toFixed(1)} MB/s` : '';
+    $('connection-detail').textContent=`${formatBytes(loaded)} of ${formatBytes(total)} downloaded${speed}`;
+  } else {
+    $('connection-detail').textContent='Loading the speech model and optimizing it for this device.';
+  }
+  $('setup-eta').textContent=formatEta(detail.etaSeconds);
+  $('technical-reader-detail').textContent=`USR 2.0 Base+ · ${detail.provider || (navigator.gpu?'WebGPU':'WASM')} · on-device`;
+}
+function processProgress(detail={}) {
+  if(detail.phase==='setup') {
+    const mapped=(detail.progress || 0)*0.18;
+    setRing('process-ring',mapped,'process-percent');
+    $('stage').textContent=detail.stage || 'Finishing transcription setup…';
+    $('process-eta').textContent=formatEta(detail.etaSeconds);
+    return;
+  }
+  setRing('process-ring',detail.progress,'process-percent');
+  if(detail.stage) $('stage').textContent=detail.stage;
+  $('process-eta').textContent=formatEta(detail.etaSeconds);
+}
+
+const runtimeStates = new Set(['ready','partial']);
+window.addEventListener('camera-browser-python', event => {
+  const detail=event.detail||{};
+  if($('browser-runtime-title')) $('browser-runtime-title').textContent=detail.title||'Browser Python';
+  if($('browser-runtime-detail')) $('browser-runtime-detail').textContent=detail.detail||'';
+  if($('browser-runtime-dot')) $('browser-runtime-dot').classList.toggle('ready',runtimeStates.has(detail.state));
+});
+window.addEventListener('camera-model-progress', event => setupProgress(event.detail||{}));
+
+const headers = () => key ? {Authorization:`Bearer ${key}`} : {};
+async function api(path,options={},timeout=10000) {
+  const response=await fetch(endpoint+path,{
+    ...options,
+    headers:{...headers(),...options.headers},
+    signal:AbortSignal.timeout(timeout)
+  });
+  const data=await response.json();
+  if(!response.ok) throw new Error(data.detail || 'The reader could not complete this request.');
+  return data;
+}
+
+function controls() {
+  const recording=recorder?.state==='recording';
+  $('record').disabled=!stream || busy;
+  $('record').textContent=recording ? 'Stop & transcribe' : 'Start recording';
+  $('upload').disabled=busy || recording;
+  $('transcribe').disabled=!clip || busy || (!localReader && !ready) || (localReader && modelFailed);
+  $('discard').disabled=busy;
+  $('enable').disabled=busy || acquiring;
+  $('settings-open').disabled=busy;
+  $('connect').disabled=busy;
+}
+
+function startLocalPreload(epoch) {
+  localReader=true;ready=false;modelFailed=false;controls();
+  setupProgress({
+    phase:'setup',
+    stage:'Preparing transcription',
+    progress:0.01,
+    etaSeconds:null,
+    provider:navigator.gpu?'WebGPU':'WASM'
+  });
+  localPreloadPromise=import('./local-vsr.js')
+    .then(runtime=>runtime.preloadLocalModel(setupProgress))
+    .then(result=>{
+      if(epoch!==connectEpoch) return result;
+      ready=true;controls();
+      return result;
+    })
+    .catch(error=>{
+      if(epoch!==connectEpoch) return;
+      setupProgress({phase:'setup',error:error.message || 'Could not prepare the on-device model.'});
+    });
+}
+
+async function connect() {
+  const epoch=++connectEpoch;
+  ready=false;localReader=false;modelFailed=false;controls();
+  $('connection-dot').classList.remove('ready');
+
+  if(readerKind==='local') {
+    startLocalPreload(epoch);
+    return;
+  }
+
+  setRing('setup-ring',0.12,'setup-percent');
+  $('connection-title').textContent='Connecting to your reader';
+  $('connection-detail').textContent='Checking the server connection.';
+  $('setup-eta').textContent='';
   try {
-    endpoint = endpointURL(endpoint);
-    const health = await api('/api/health', {}, 8000);
-    if (epoch !== connectEpoch) return;
-    if (health.version !== 1 || health.modality !== 'video') throw new Error('This address is not a compatible camera reader.');
-    ready = health.status === 'ready';
-    $('connection-title').textContent = ready ? 'Your reader is ready' : health.message;
-    $('connection-detail').textContent = ready ? `Clips are sent only when you transcribe · ${new URL(endpoint).host}` : 'The model is loading on your reader.';
-    $('connection-dot').classList.toggle('ready', ready);
-    if (health.status === 'loading') setTimeout(() => { if (epoch === connectEpoch) connect(); }, 5000);
-  } catch (error) {
-    if (epoch !== connectEpoch) return;
-    $('connection-title').textContent = 'Connect a reader to get started';
-    $('connection-detail').textContent = error.message.includes('key') ? error.message : 'Open Settings to connect your local or hosted USR 2.0 server.';
+    endpoint=endpointURL(endpoint);
+    const health=await api('/api/health',{},8000);
+    if(epoch!==connectEpoch) return;
+    if(health.version!==1 || health.modality!=='video') throw new Error('This address is not a compatible camera reader.');
+    ready=health.status==='ready';
+    setRing('setup-ring',ready?1:0.45,'setup-percent');
+    $('connection-title').textContent=ready?'Connected reader ready':health.message;
+    $('connection-detail').textContent=ready?`Using ${new URL(endpoint).host}`:'The server model is still loading.';
+    $('setup-eta').textContent=ready?'Ready to record':'Waiting for the server…';
+    $('connection-dot').classList.toggle('ready',ready);
+    $('technical-reader-detail').textContent=`Connected USR reader · ${new URL(endpoint).host}`;
+    if(health.status==='loading') setTimeout(()=>{if(epoch===connectEpoch)connect();},5000);
+  } catch(error) {
+    if(epoch!==connectEpoch) return;
+    setRing('setup-ring',0,'setup-percent');
+    $('connection-title').textContent='Could not connect to the reader';
+    $('connection-detail').textContent=error.message.includes('key')?error.message:'Check the server address in Options.';
+    $('setup-eta').textContent='';
   }
   controls();
 }
+
 function syncReaderSettings() {
-  const localChoice = $('reader-kind').value === 'local';
-  $('server-settings').hidden = localChoice;
-  $('endpoint').required = !localChoice;
+  const localChoice=$('reader-kind').value==='local';
+  $('server-settings').hidden=localChoice;
+  $('endpoint').required=!localChoice;
 }
 function settings() {
-  $('endpoint').value=endpoint; $('key').value=key; $('mode').value=mode; $('reader-kind').value=readerKind;
-  syncReaderSettings(); $('settings').showModal();
+  $('endpoint').value=endpoint;
+  $('key').value=key;
+  $('mode').value=mode;
+  $('reader-kind').value=readerKind;
+  syncReaderSettings();
+  $('settings').showModal();
 }
-$('settings-open').onclick = settings;
-$('connect').onclick = settings;
-$('help-open').onclick = () => $('help').showModal();
-document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => $(button.dataset.close).close());
-$('reader-kind').onchange = syncReaderSettings;
-$('settings-form').onsubmit = event => {
+$('settings-open').onclick=settings;
+$('connect').onclick=settings;
+$('help-open').onclick=()=>$('help').showModal();
+document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
+$('reader-kind').onchange=syncReaderSettings;
+$('settings-form').onsubmit=event=>{
   event.preventDefault();
   readerKind=$('reader-kind').value;
   if(readerKind==='server') {
-    try { endpoint = endpointURL($('endpoint').value.trim()); } catch(error) { $('endpoint').setCustomValidity(error.message); $('endpoint').reportValidity(); return; }
+    try {endpoint=endpointURL($('endpoint').value.trim());}
+    catch(error){$('endpoint').setCustomValidity(error.message);$('endpoint').reportValidity();return;}
     key=$('key').value.trim();
   }
   mode=$('mode').value;
   try {localStorage.setItem('camera-preferences',JSON.stringify({endpoint,mode,readerKind}));} catch {}
-  $('settings').close(); connect();
+  $('settings').close();
+  connect();
 };
-$('endpoint').oninput = () => $('endpoint').setCustomValidity('');
+$('endpoint').oninput=()=>$('endpoint').setCustomValidity('');
+
 function stopCamera() {
-  if (recorder?.state === 'recording') recorder.stop();
-  stream?.getTracks().forEach(track => track.stop()); stream=null;
+  if(recorder?.state==='recording') recorder.stop();
+  stream?.getTracks().forEach(track=>track.stop());
+  stream=null;
   $('video').srcObject=null;
-  $('dropzone').classList.remove('live'); $('guide').hidden=true; $('video-label').hidden=true; $('camera-off').hidden=true;
-  $('camera-empty').hidden=!!clip; controls();
+  $('dropzone').classList.remove('live');
+  $('guide').hidden=true;
+  $('video-label').hidden=true;
+  $('camera-off').hidden=true;
+  $('camera-empty').hidden=!!clip;
+  controls();
 }
 function clearClip() {
   clip=null;
   if(previewURL) URL.revokeObjectURL(previewURL);
-  previewURL=null; $('video').removeAttribute('src'); $('video').controls=false; $('clip').hidden=true;
-  $('camera-empty').hidden=!!stream; controls();
+  previewURL=null;
+  $('video').removeAttribute('src');
+  $('video').controls=false;
+  $('clip').hidden=true;
+  $('camera-empty').hidden=!!stream;
+  controls();
 }
-$('enable').onclick = async () => {
-  if (acquiring || stream) return;
-  acquiring = true; controls();
+
+$('enable').onclick=async()=>{
+  if(acquiring||stream) return;
+  acquiring=true;controls();
   try {
-    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access needs HTTPS or localhost and a supported browser. You can also upload a clip.');
-    stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:25,max:30}},audio:false});
-    clearClip(); $('video').srcObject=stream; await $('video').play();
-    $('camera-empty').hidden=true; $('guide').hidden=false; $('video-label').hidden=false; $('camera-off').hidden=false; $('dropzone').classList.add('live'); controls(); notice('Camera on. Start recording when you are ready.');
-  } catch(error) { stopCamera(); notice(error.name==='NotAllowedError' ? 'Camera permission was declined. Allow access in your browser or upload a clip.' : error.message); } finally { acquiring = false; controls(); }
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS or localhost. You can also upload a video.');
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:25,max:30}},
+      audio:false
+    });
+    clearClip();
+    $('video').srcObject=stream;
+    await $('video').play();
+    $('camera-empty').hidden=true;
+    $('guide').hidden=false;
+    $('video-label').hidden=false;
+    $('camera-off').hidden=false;
+    $('dropzone').classList.add('live');
+    notice('Camera is on. Press Start recording and say one short sentence.');
+  } catch(error) {
+    stopCamera();
+    notice(error.name==='NotAllowedError'?'Camera permission was declined. Allow camera access or upload a video.':error.message);
+  } finally {
+    acquiring=false;controls();
+  }
 };
 $('camera-off').onclick=stopCamera;
-function selectClip(blob, name) {
-  clearClip(); clip=blob; stopCamera(); previewURL=URL.createObjectURL(blob); $('video').src=previewURL; $('video').controls=true; $('video').muted=true; $('camera-empty').hidden=true; $('clip-name').textContent=name; $('clip').hidden=false; controls(); notice('Preview your clip, then choose Transcribe.');
+
+function selectClip(blob,name,{auto=false}={}) {
+  clearClip();
+  clip=blob;
+  stopCamera();
+  previewURL=URL.createObjectURL(blob);
+  $('video').src=previewURL;
+  $('video').controls=true;
+  $('video').muted=true;
+  $('camera-empty').hidden=true;
+  $('clip-name').textContent=auto?'Recording finished · transcription starting automatically':name;
+  $('clip').hidden=false;
+  controls();
+  if(auto) {
+    notice('Recording finished. Transcription is starting automatically.');
+    queueMicrotask(transcribeClip);
+  } else {
+    notice('Video ready. Press Transcribe uploaded video.');
+  }
 }
-$('record').onclick = () => {
-  if(recorder?.state==='recording') { recorder.stop(); return; }
+
+$('record').onclick=()=>{
+  if(recorder?.state==='recording'){recorder.stop();return;}
   try {
-    const mime = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/mp4'].find(type => MediaRecorder.isTypeSupported(type));
+    const mime=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/mp4'].find(type=>MediaRecorder.isTypeSupported(type));
     const chunks=[];
-    recorder=new MediaRecorder(stream, {...(mime ? {mimeType:mime} : {}),videoBitsPerSecond:1500000});
-    recorder.ondataavailable=event => { if(event.data.size) chunks.push(event.data); };
-    recorder.onerror=() => { clearInterval(timer); stopCamera(); notice('Recording failed. Try uploading a clip instead.'); };
-    recorder.onstop=() => { clearInterval(timer); $('timer').hidden=true; selectClip(new Blob(chunks,{type:recorder.mimeType}), 'Your recording'); };
-    recorder.start(500); const started=performance.now(); $('timer').hidden=false; $('timer').textContent='0:00 / 0:20';
-    timer=setInterval(()=> { const seconds=(performance.now()-started)/1000; $('timer').textContent=`${clock(seconds)} / 0:20`; if(seconds>=19.8 && recorder.state==='recording') recorder.stop(); },100);
-    controls(); notice('Recording video only. Click Stop when you finish.');
-  } catch(error) {notice('This browser cannot record video. Try uploading an MP4 clip.');}
+    recorder=new MediaRecorder(stream,{...(mime?{mimeType:mime}:{}),videoBitsPerSecond:1500000});
+    recorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data);};
+    recorder.onerror=()=>{
+      clearInterval(timer);
+      stopCamera();
+      notice('Recording failed. Try uploading a video instead.');
+    };
+    recorder.onstop=()=>{
+      clearInterval(timer);
+      $('timer').hidden=true;
+      selectClip(new Blob(chunks,{type:recorder.mimeType}),'Your recording',{auto:true});
+    };
+    recorder.start(500);
+    const started=performance.now();
+    $('timer').hidden=false;
+    $('timer').textContent='0:00 / 0:20';
+    timer=setInterval(()=>{
+      const seconds=(performance.now()-started)/1000;
+      $('timer').textContent=`${clock(seconds)} / 0:20`;
+      if(seconds>=19.8&&recorder.state==='recording') recorder.stop();
+    },100);
+    controls();
+    notice('Recording. Press Stop & transcribe when you finish.');
+  } catch {
+    notice('This browser cannot record video. Try uploading an MP4 or WebM video.');
+  }
 };
+
 async function upload(file) {
-  if(!file || busy || recorder?.state==='recording') return;
+  if(!file||busy||recorder?.state==='recording') return;
   if(file.size>50*1024*1024) return notice('Choose a video under 50 MB.');
-  const type=videoType(file.name) || file.type;
-  if(!['video/mp4','video/webm','video/quicktime','video/x-msvideo'].includes(type)) return notice('Choose MP4, MOV, WebM or AVI video.');
-  const probe=document.createElement('video'), url=URL.createObjectURL(file);
+  const type=videoType(file.name)||file.type;
+  if(!['video/mp4','video/webm','video/quicktime','video/x-msvideo'].includes(type)) return notice('Choose an MP4, MOV, WebM or AVI video.');
+  const probe=document.createElement('video'),url=URL.createObjectURL(file);
   try {
-    await new Promise((resolve,reject)=>{ const timeout=setTimeout(()=>reject(new Error('Cannot preview this video. Try an MP4 or WebM clip.')),8000); probe.onloadedmetadata=()=>{clearTimeout(timeout);resolve();};probe.onerror=()=>{clearTimeout(timeout);reject(new Error('Cannot preview this video in your browser. Try MP4 or WebM.'));};probe.src=url; });
-    if(probe.duration>20.3 || probe.duration<0.4) throw new Error('Choose a clip between half a second and 20 seconds.');
+    await new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error('Could not preview this video. Try MP4 or WebM.')),8000);
+      probe.onloadedmetadata=()=>{clearTimeout(timeout);resolve();};
+      probe.onerror=()=>{clearTimeout(timeout);reject(new Error('Could not preview this video in your browser. Try MP4 or WebM.'));};
+      probe.src=url;
+    });
+    if(probe.duration>20.3||probe.duration<0.4) throw new Error('Choose a video between half a second and 20 seconds.');
     selectClip(new Blob([file],{type}),file.name);
-  } catch(error) {notice(error.message);} finally {probe.removeAttribute('src');probe.load();URL.revokeObjectURL(url);}
+  } catch(error) {
+    notice(error.message);
+  } finally {
+    probe.removeAttribute('src');probe.load();URL.revokeObjectURL(url);
+  }
 }
 $('upload').onclick=()=>$('file').click();
 $('file').onchange=()=>{upload($('file').files[0]);$('file').value='';};
-$('dropzone').ondragover=e=>{e.preventDefault();$('dropzone').classList.add('drag');};
+$('dropzone').ondragover=event=>{event.preventDefault();$('dropzone').classList.add('drag');};
 $('dropzone').ondragleave=()=>$('dropzone').classList.remove('drag');
-$('dropzone').ondrop=e=>{e.preventDefault();$('dropzone').classList.remove('drag');upload(e.dataTransfer.files[0]);};
-$('discard').onclick=()=>{clearClip();notice('Clip discarded. Enable the camera to start again.');};
-function resultControls() { const hasText=!!$('text').value.trim() && !busy; ['copy','speak','download'].forEach(id=>$(id).disabled=!hasText); $('word-count').textContent=`${wordCount($('text').value)} words`; }
-function renderHistory() { $('history').replaceChildren();$('session').hidden=!history.length; for(const item of history) {const button=document.createElement('button');button.textContent=item.edited || item.text;button.onclick=()=>{if(!busy) show(item);};$('history').append(button);} }
-function show(item) { selected=item; $('empty-result').hidden=true;$('result').hidden=false;$('text').value=item.edited ?? item.text;$('original').textContent=item.text;$('elapsed').textContent=`${item.seconds}s processing`;$('result-tag').textContent='YOURS TO EDIT';$('alternatives').replaceChildren();for(const text of item.alternatives||[]) {const li=document.createElement('li');li.textContent=text;$('alternatives').append(li);}resultControls(); }
-function finish() {busy=false;jobId=null;$('busy').hidden=true;$('result').hidden=!selected;$('empty-result').hidden=!!selected;controls();resultControls();}
-function acceptResult(item) { history.unshift(item);if(history.length>30)history.pop();finish();show(item);renderHistory();notice(item.local ? 'On-device reading ready. Your video never left this tab.' : 'Your reading is ready. Please review the words.'); }
-$('transcribe').onclick=async()=>{
-  if(!clip||busy||!ready)return;
-  busy=true;cancelRequested=false;$('busy').hidden=false;$('result').hidden=true;$('empty-result').hidden=true;$('stage').textContent=localReader?'Preparing on-device USR…':'Uploading your clip…';controls();resultControls();
+$('dropzone').ondrop=event=>{event.preventDefault();$('dropzone').classList.remove('drag');upload(event.dataTransfer.files[0]);};
+$('discard').onclick=()=>{clearClip();notice('Video discarded.');};
+
+function resultControls() {
+  const hasText=!!$('text').value.trim()&&!busy;
+  ['copy','speak','download'].forEach(id=>$(id).disabled=!hasText);
+  $('word-count').textContent=`${wordCount($('text').value)} words`;
+}
+function renderHistory() {
+  $('history').replaceChildren();
+  $('session').hidden=!history.length;
+  for(const item of history){
+    const button=document.createElement('button');
+    button.textContent=item.edited||item.text;
+    button.onclick=()=>{if(!busy)show(item);};
+    $('history').append(button);
+  }
+}
+function show(item) {
+  selected=item;
+  $('empty-result').hidden=true;
+  $('result').hidden=false;
+  $('text').value=item.edited??item.text;
+  $('original').textContent=item.text;
+  $('elapsed').textContent=`${item.seconds}s processing`;
+  $('result-tag').textContent='READY TO REVIEW';
+  $('alternatives').replaceChildren();
+  for(const text of item.alternatives||[]){
+    const li=document.createElement('li');li.textContent=text;$('alternatives').append(li);
+  }
+  resultControls();
+}
+function finish() {
+  busy=false;jobId=null;
+  $('busy').hidden=true;
+  $('result').hidden=!selected;
+  $('empty-result').hidden=!!selected;
+  controls();resultControls();
+}
+function acceptResult(item) {
+  history.unshift(item);
+  if(history.length>30)history.pop();
+  finish();show(item);renderHistory();
+  notice(item.local?'Transcript ready. Processing stayed on this device.':'Transcript ready. Review the text before using it.');
+}
+
+async function transcribeClip() {
+  if(!clip||busy) return;
+  if(!localReader&&!ready) return notice('The connected reader is not ready yet.');
+  if(localReader&&modelFailed) return notice('On-device transcription could not start. Open Options to use a connected reader.');
+
+  busy=true;cancelRequested=false;
+  $('busy').hidden=false;
+  $('result').hidden=true;
+  $('empty-result').hidden=true;
+  $('result-tag').textContent='TRANSCRIBING';
+  setRing('process-ring',0.01,'process-percent');
+  $('stage').textContent=localReader?'Preparing video…':'Uploading video…';
+  $('process-eta').textContent='Estimating time remaining…';
+  controls();resultControls();
+
   try {
     if(localReader) {
-      const {transcribeLocally}=await import('./local-vsr.js');
-      const item=await transcribeLocally(clip, ({stage})=>{ if(stage) $('stage').textContent=stage; });
-      if(cancelRequested){notice('Cancelled.');finish();return;}
-      acceptResult(item);return;
+      const runtime=await import('./local-vsr.js');
+      const item=await runtime.transcribeLocally(clip,processProgress);
+      if(cancelRequested){notice('Transcription cancelled.');finish();return;}
+      acceptResult(item);
+      return;
     }
-    // Do not abort an accepted upload: retain its id so cancellation can clean it up.
-    const created=await api(`/api/jobs?mode=${encodeURIComponent(mode)}`,{method:'POST',headers:{'Content-Type':clip.type.split(';')[0]},body:clip},70000);jobId=created.id;
-    const started=Date.now();let failures=0;
+
+    const created=await api(`/api/jobs?mode=${encodeURIComponent(mode)}`,{
+      method:'POST',
+      headers:{'Content-Type':clip.type.split(';')[0]},
+      body:clip
+    },70000);
+    jobId=created.id;
+    const started=Date.now();
+    let failures=0;
     while(Date.now()-started<20*60*1000) {
-      if(cancelRequested) {await api(`/api/jobs/${jobId}`,{method:'DELETE'});notice('Cancelled. Any running computation will finish before its video is deleted.');finish();return;}
+      if(cancelRequested) {
+        await api(`/api/jobs/${jobId}`,{method:'DELETE'});
+        notice('Transcription cancelled.');
+        finish();return;
+      }
       let status;
-      try {status=await api(`/api/jobs/${jobId}`);failures=0;} catch(error) {if(++failures>3)throw error;await sleep(3000);continue;}
-      $('stage').textContent=status.stage || 'Reading your words…';
-      if(status.state==='error')throw new Error(status.error);
-      if(status.state==='cancelled')throw new Error('This reading was cancelled.');
-      if(status.state==='done') { const item={...status.result};await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});acceptResult(item);return; }
+      try {status=await api(`/api/jobs/${jobId}`);failures=0;}
+      catch(error){if(++failures>3)throw error;await sleep(3000);continue;}
+      $('stage').textContent=status.stage||'Transcribing video…';
+      if(status.state==='processing') setRing('process-ring',0.65,'process-percent');
+      if(status.state==='error') throw new Error(status.error);
+      if(status.state==='cancelled') throw new Error('This transcription was cancelled.');
+      if(status.state==='done') {
+        const item={...status.result};
+        await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});
+        setRing('process-ring',1,'process-percent');
+        acceptResult(item);return;
+      }
       await sleep(1000);
     }
-    throw new Error('The reader is taking too long. Try a shorter clip or a faster server.');
-  } catch(error) {if(jobId)await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});notice(error.message || 'Connection lost. Check your reader and try again.');finish();}
+    throw new Error('The reader is taking too long. Try a shorter video.');
+  } catch(error) {
+    if(jobId) await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});
+    notice(error.message||'Transcription failed. Try again.');
+    $('result-tag').textContent='TRY AGAIN';
+    finish();
+  }
+}
+$('transcribe').onclick=transcribeClip;
+$('cancel').onclick=()=>{
+  cancelRequested=true;
+  $('stage').textContent=localReader?'Stopping after the current local step…':'Cancelling…';
 };
-$('cancel').onclick=()=>{cancelRequested=true;$('stage').textContent=localReader?'Cancelling after the current on-device step…':'Cancelling…';};
-$('text').oninput=()=>{if(selected)selected.edited=$('text').value;resultControls();renderHistory();};
-$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('text').value);notice('Copied to clipboard.');}catch{$('text').focus();$('text').select();notice('Select Copy from your browser to copy the selected text.');}};
-$('speak').onclick=()=>{if(!('speechSynthesis'in window))return notice('Read aloud is not supported by this browser.');speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance($('text').value));};
-$('download').onclick=()=>{const url=URL.createObjectURL(new Blob([$ ('text').value],{type:'text/plain;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download='camera-transcript.txt';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-$('clear').onclick=()=>{if(busy)return;history.length=0;selected=null;$('text').value='';$('original').textContent='';$('alternatives').replaceChildren();$('elapsed').textContent='';$('result-tag').textContent='READY WHEN YOU ARE';window.speechSynthesis?.cancel();$('result').hidden=true;$('empty-result').hidden=false;renderHistory();resultControls();notice('Session history cleared.');};
-window.addEventListener('pagehide',()=>{clearInterval(timer);if(recorder)recorder.onstop=null;stopCamera();if(previewURL)URL.revokeObjectURL(previewURL);window.speechSynthesis?.cancel();});
+
+$('text').oninput=()=>{
+  if(selected)selected.edited=$('text').value;
+  resultControls();renderHistory();
+};
+$('copy').onclick=async()=>{
+  try {await navigator.clipboard.writeText($('text').value);notice('Copied to clipboard.');}
+  catch {$('text').focus();$('text').select();notice('Text selected. Use your browser Copy command.');}
+};
+$('speak').onclick=()=>{
+  if(!('speechSynthesis'in window)) return notice('Read aloud is not supported by this browser.');
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance($('text').value));
+};
+$('download').onclick=()=>{
+  const url=URL.createObjectURL(new Blob([$('text').value],{type:'text/plain;charset=utf-8'}));
+  const anchor=document.createElement('a');
+  anchor.href=url;anchor.download='camera-transcript.txt';anchor.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+$('clear').onclick=()=>{
+  if(busy)return;
+  history.length=0;selected=null;
+  $('text').value='';$('original').textContent='';$('alternatives').replaceChildren();$('elapsed').textContent='';
+  $('result-tag').textContent='WAITING FOR VIDEO';
+  window.speechSynthesis?.cancel();
+  $('result').hidden=true;$('empty-result').hidden=false;
+  renderHistory();resultControls();notice('Session history cleared.');
+};
+
+window.addEventListener('pagehide',()=>{
+  clearInterval(timer);
+  if(recorder)recorder.onstop=null;
+  stopCamera();
+  if(previewURL)URL.revokeObjectURL(previewURL);
+  window.speechSynthesis?.cancel();
+});
+
 connect();
