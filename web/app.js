@@ -419,6 +419,7 @@ function show(item) {
   selected=item;
   $('empty-result').hidden=true;
   $('result').hidden=false;
+  $('result').dataset.inputSource=item.input_source||'';
   $('text').value=item.edited??item.text;
   $('original').textContent=item.text;
   $('elapsed').textContent=`${item.seconds}s processing`;
