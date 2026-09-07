@@ -25,7 +25,7 @@ try {
   await page.goto(url, {waitUntil:'domcontentloaded', timeout:120000});
   await page.waitForFunction(() => window.crossOriginIsolated === true, null, {timeout:60000});
   await page.waitForFunction(
-    () => document.querySelector('#connection-title')?.textContent?.includes('On-device USR is ready'),
+    () => document.querySelector('#connection-title')?.textContent?.includes('Ready to record'),
     null,
     {timeout:60000},
   );
