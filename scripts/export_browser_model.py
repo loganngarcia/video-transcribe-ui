@@ -112,7 +112,7 @@ def main():
     import numpy as np
     import onnxruntime as ort
     sess=ort.InferenceSession(str(fp16),providers=["CPUExecutionProvider"])
-    test=np.zeros((1,24,88,88),dtype=np.float16)
+    test=np.zeros((1,24,88,88),dtype=np.float32)
     result=sess.run(None,{"video":test})[0]
     if result.ndim!=3 or result.shape[0]!=1 or result.shape[-1]!=1049:
         raise RuntimeError(f"Unexpected browser graph output shape {result.shape}")
@@ -149,7 +149,7 @@ def main():
         "checkpoint_sha256":sha256(checkpoint),
         "onnx_sha256":sha256(fp16),
         "onnx_bytes":total,
-        "input":{"name":"video","dtype":"float16","shape":["batch","frames",88,88],"normalization":{"mean":0.421,"std":0.165}},
+        "input":{"name":"video","dtype":"float32","shape":["batch","frames",88,88],"normalization":{"mean":0.421,"std":0.165}},
         "output":{"name":"logits","tokens":1049},
         "parts":parts,
     }
