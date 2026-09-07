@@ -5,7 +5,7 @@ let prefs = {};
 try { prefs = JSON.parse(localStorage.getItem('camera-preferences') || '{}'); } catch {}
 const local = ['localhost','127.0.0.1'].includes(location.hostname);
 let endpoint = prefs.endpoint || window.CAMERA_CONFIG?.apiBase || (local ? location.origin : 'http://localhost:8000');
-let mode = prefs.mode || 'balanced', key = '', ready = false, busy = false, stream, recorder, clip, previewURL, jobId, cancelRequested = false, timer, connectEpoch = 0;
+let mode = prefs.mode || 'balanced', readerKind = prefs.readerKind || (local ? 'server' : 'local'), key = '', ready = false, localReader = false, busy = false, stream, recorder, clip, previewURL, jobId, cancelRequested = false, timer, connectEpoch = 0;
 const history = [];
 let selected, acquiring = false;
 const notice = message => { $('notice').textContent = message; };
@@ -37,9 +37,28 @@ function controls() {
 }
 async function connect() {
   const epoch = ++connectEpoch;
-  ready = false; controls();
-  $('connection-title').textContent = 'Connecting to your reader…';
+  ready = false; localReader = false; controls();
+  $('connection-title').textContent = readerKind === 'local' ? 'Checking this device…' : 'Connecting to your reader…';
   $('connection-dot').classList.remove('ready');
+  if (readerKind === 'local') {
+    try {
+      const response = await fetch(new URL('model/manifest.json', document.baseURI), {method:'HEAD', cache:'no-cache'});
+      if (epoch !== connectEpoch) return;
+      localReader = response.ok;
+      ready = localReader;
+      $('connection-title').textContent = ready ? 'On-device USR is ready' : 'On-device model is still being prepared';
+      $('connection-detail').textContent = ready
+        ? `USR 2.0 Base+ runs in this browser · ${navigator.gpu ? 'WebGPU' : 'WASM'} · your video stays on this device`
+        : 'Open Settings and choose a connected reader if you want to transcribe before the browser model is available.';
+      $('connection-dot').classList.toggle('ready', ready);
+    } catch {
+      if (epoch !== connectEpoch) return;
+      $('connection-title').textContent = 'On-device reader unavailable';
+      $('connection-detail').textContent = 'Open Settings and choose a connected reader.';
+    }
+    controls();
+    return;
+  }
   try {
     endpoint = endpointURL(endpoint);
     const health = await api('/api/health', {}, 8000);
@@ -57,16 +76,29 @@ async function connect() {
   }
   controls();
 }
-function settings() { $('endpoint').value=endpoint; $('key').value=key; $('mode').value=mode; $('settings').showModal(); }
+function syncReaderSettings() {
+  const localChoice = $('reader-kind').value === 'local';
+  $('server-settings').hidden = localChoice;
+  $('endpoint').required = !localChoice;
+}
+function settings() {
+  $('endpoint').value=endpoint; $('key').value=key; $('mode').value=mode; $('reader-kind').value=readerKind;
+  syncReaderSettings(); $('settings').showModal();
+}
 $('settings-open').onclick = settings;
 $('connect').onclick = settings;
 $('help-open').onclick = () => $('help').showModal();
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => $(button.dataset.close).close());
+$('reader-kind').onchange = syncReaderSettings;
 $('settings-form').onsubmit = event => {
   event.preventDefault();
-  try { endpoint = endpointURL($('endpoint').value.trim()); } catch(error) { $('endpoint').setCustomValidity(error.message); $('endpoint').reportValidity(); return; }
-  key=$('key').value.trim(); mode=$('mode').value;
-  try {localStorage.setItem('camera-preferences',JSON.stringify({endpoint,mode}));} catch {}
+  readerKind=$('reader-kind').value;
+  if(readerKind==='server') {
+    try { endpoint = endpointURL($('endpoint').value.trim()); } catch(error) { $('endpoint').setCustomValidity(error.message); $('endpoint').reportValidity(); return; }
+    key=$('key').value.trim();
+  }
+  mode=$('mode').value;
+  try {localStorage.setItem('camera-preferences',JSON.stringify({endpoint,mode,readerKind}));} catch {}
   $('settings').close(); connect();
 };
 $('endpoint').oninput = () => $('endpoint').setCustomValidity('');
@@ -133,10 +165,17 @@ function resultControls() { const hasText=!!$('text').value.trim() && !busy; ['c
 function renderHistory() { $('history').replaceChildren();$('session').hidden=!history.length; for(const item of history) {const button=document.createElement('button');button.textContent=item.edited || item.text;button.onclick=()=>{if(!busy) show(item);};$('history').append(button);} }
 function show(item) { selected=item; $('empty-result').hidden=true;$('result').hidden=false;$('text').value=item.edited ?? item.text;$('original').textContent=item.text;$('elapsed').textContent=`${item.seconds}s processing`;$('result-tag').textContent='YOURS TO EDIT';$('alternatives').replaceChildren();for(const text of item.alternatives||[]) {const li=document.createElement('li');li.textContent=text;$('alternatives').append(li);}resultControls(); }
 function finish() {busy=false;jobId=null;$('busy').hidden=true;$('result').hidden=!selected;$('empty-result').hidden=!!selected;controls();resultControls();}
+function acceptResult(item) { history.unshift(item);if(history.length>30)history.pop();finish();show(item);renderHistory();notice(item.local ? 'On-device reading ready. Your video never left this tab.' : 'Your reading is ready. Please review the words.'); }
 $('transcribe').onclick=async()=>{
   if(!clip||busy||!ready)return;
-  busy=true;cancelRequested=false;$('busy').hidden=false;$('result').hidden=true;$('empty-result').hidden=true;$('stage').textContent='Uploading your clip…';controls();resultControls();
+  busy=true;cancelRequested=false;$('busy').hidden=false;$('result').hidden=true;$('empty-result').hidden=true;$('stage').textContent=localReader?'Preparing on-device USR…':'Uploading your clip…';controls();resultControls();
   try {
+    if(localReader) {
+      const {transcribeLocally}=await import('./local-vsr.js');
+      const item=await transcribeLocally(clip, ({stage})=>{ if(stage) $('stage').textContent=stage; });
+      if(cancelRequested){notice('Cancelled.');finish();return;}
+      acceptResult(item);return;
+    }
     // Do not abort an accepted upload: retain its id so cancellation can clean it up.
     const created=await api(`/api/jobs?mode=${encodeURIComponent(mode)}`,{method:'POST',headers:{'Content-Type':clip.type.split(';')[0]},body:clip},70000);jobId=created.id;
     const started=Date.now();let failures=0;
@@ -147,13 +186,13 @@ $('transcribe').onclick=async()=>{
       $('stage').textContent=status.stage || 'Reading your words…';
       if(status.state==='error')throw new Error(status.error);
       if(status.state==='cancelled')throw new Error('This reading was cancelled.');
-      if(status.state==='done') { const item={...status.result};await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});history.unshift(item);if(history.length>30)history.pop();finish();show(item);renderHistory();notice('Your reading is ready. Please review the words.');return; }
+      if(status.state==='done') { const item={...status.result};await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});acceptResult(item);return; }
       await sleep(1000);
     }
     throw new Error('The reader is taking too long. Try a shorter clip or a faster server.');
   } catch(error) {if(jobId)await api(`/api/jobs/${jobId}`,{method:'DELETE'}).catch(()=>{});notice(error.message || 'Connection lost. Check your reader and try again.');finish();}
 };
-$('cancel').onclick=()=>{cancelRequested=true;$('stage').textContent='Cancelling…';};
+$('cancel').onclick=()=>{cancelRequested=true;$('stage').textContent=localReader?'Cancelling after the current on-device step…':'Cancelling…';};
 $('text').oninput=()=>{if(selected)selected.edited=$('text').value;resultControls();renderHistory();};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('text').value);notice('Copied to clipboard.');}catch{$('text').focus();$('text').select();notice('Select Copy from your browser to copy the selected text.');}};
 $('speak').onclick=()=>{if(!('speechSynthesis'in window))return notice('Read aloud is not supported by this browser.');speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance($('text').value));};
