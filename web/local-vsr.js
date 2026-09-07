@@ -305,16 +305,18 @@ function similarity(src,dst) {
 }
 function transformPoint(p,m){return [m.a*p[0]-m.b*p[1]+m.tx,m.b*p[0]+m.a*p[1]+m.ty];}
 
-function mouthFrame(video,landmarks,meanFace,canvas,ctx) {
+function mouthFrame(source,landmarks,meanFace,canvas,ctx) {
+  const sourceWidth=source.videoWidth||source.naturalWidth||source.width;
+  const sourceHeight=source.videoHeight||source.naturalHeight||source.height;
   const mapped=MP_TO_68.map(index=>{
     const p=landmarks[index];
-    return [p.x*video.videoWidth,p.y*video.videoHeight];
+    return [p.x*sourceWidth,p.y*sourceHeight];
   });
   const m=similarity(STABLE.map(i=>mapped[i]),STABLE.map(i=>meanFace[i]));
   if(!m) return null;
   canvas.width=256;canvas.height=256;
   ctx.setTransform(m.a,m.b,-m.b,m.a,m.tx,m.ty);
-  ctx.drawImage(video,0,0);
+  ctx.drawImage(source,0,0);
   ctx.setTransform(1,0,0,1,0,0);
   const lips=mapped.slice(48,68).map(p=>transformPoint(p,m));
   const cx=lips.reduce((v,p)=>v+p[0],0)/lips.length;
@@ -341,72 +343,111 @@ async function seek(video,time) {
 }
 
 export async function startLiveMouthCapture(video) {
-  const prepared=await preloadLocalModel();
-  const {landmarker,meanFace}=prepared.resources;
+  // Camera recordings bypass container decoding. During recording we only
+  // capture small compressed snapshots; face tracking runs after Stop so the
+  // UI remains responsive.
   const canvas=document.createElement('canvas');
-  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const width=320;
+  const height=Math.max(180,Math.round(width*(video.videoHeight||480)/(video.videoWidth||640)));
+  canvas.width=width;
+  canvas.height=height;
+  const ctx=canvas.getContext('2d',{alpha:false});
   const frames=[];
-  let found=0;
-  let attempted=0;
-  let last=null;
+  const started=performance.now();
   let running=true;
   let timer=0;
-  let captureError=null;
+  let pending=Promise.resolve();
 
-  const captureFrame=()=>{
+  const captureOnce=()=>new Promise(resolve=>{
+    if(!running || video.readyState<2 || !video.videoWidth) return resolve();
+    ctx.drawImage(video,0,0,width,height);
+    canvas.toBlob(blob=>{
+      if(blob) frames.push({blob,time:performance.now()-started});
+      resolve();
+    },'image/jpeg',0.82);
+  });
+
+  const loop=async()=>{
     if(!running) return;
-    const started=performance.now();
-    if(attempted<500 && video.readyState>=2 && video.videoWidth>0) {
-      attempted++;
-      try {
-        const result=landmarker.detect(video);
-        const face=result.faceLandmarks?.[0];
-        let frame=null;
-        if(face) {
-          frame=mouthFrame(video,face,meanFace,canvas,ctx);
-          if(frame) found++;
-        }
-        if(!frame && last) frame=last.slice();
-        if(frame) {
-          frames.push(frame);
-          last=frame;
-        }
-      } catch(error) {
-        captureError=error;
-        running=false;
-      }
-    }
-    if(running) {
-      const elapsed=performance.now()-started;
-      timer=setTimeout(captureFrame,Math.max(0,40-elapsed));
-    }
+    const tick=performance.now();
+    pending=captureOnce();
+    await pending;
+    if(!running) return;
+    const elapsed=performance.now()-tick;
+    timer=setTimeout(loop,Math.max(5,40-elapsed));
   };
-
-  timer=setTimeout(captureFrame,0);
+  timer=setTimeout(loop,0);
 
   return {
-    stop() {
+    async stop() {
       running=false;
       if(timer) clearTimeout(timer);
-      if(captureError) throw captureError;
-      if(attempted<12 || frames.length<12) {
-        throw new Error('The camera recording was too short to read. Record at least half a second.');
-      }
-      const coverage=found/attempted;
-      if(coverage<0.6) {
-        throw new Error('Your face was not clearly visible for enough of the recording. Keep your whole face in view and try again.');
-      }
-      while(frames.length<attempted && last) frames.push(last.slice());
-      const count=frames.length;
-      const tensor=new Float32Array(count*88*88);
-      frames.forEach((frame,index)=>tensor.set(frame,index*88*88));
-      return {tensor,count,coverage,source:'live-camera'};
+      await pending.catch(()=>{});
+      const duration=performance.now()-started;
+      if(duration<450) throw new Error('The camera recording was too short to read. Record at least half a second.');
+      if(frames.length<4) throw new Error('The browser could not capture enough camera frames. Record again.');
+      return {images:frames,duration,source:'live-camera'};
     },
     cancel() {
       running=false;
       if(timer) clearTimeout(timer);
     }
   };
+}
+
+async function extractCapturedImages(capture,landmarker,meanFace,status) {
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const processed=[];
+  let found=0;
+  let last=null;
+  const total=capture.images.length;
+  const started=performance.now();
+
+  for(let i=0;i<total;i++) {
+    const item=capture.images[i];
+    let bitmap;
+    try {
+      bitmap=await createImageBitmap(item.blob);
+      const result=landmarker.detect(bitmap);
+      const face=result.faceLandmarks?.[0];
+      let frame=null;
+      if(face) {
+        frame=mouthFrame(bitmap,face,meanFace,canvas,ctx);
+        if(frame) found++;
+      }
+      if(!frame && last) frame=last.slice();
+      if(frame) {
+        processed.push({frame,time:item.time});
+        last=frame;
+      }
+    } finally {
+      bitmap?.close?.();
+    }
+    const elapsed=performance.now()-started;
+    const perImage=elapsed/(i+1);
+    const remaining=(total-i-1)*perImage+inferenceEstimateMs(Math.max(12,Math.round(capture.duration/40)));
+    emit(status,{
+      phase:'processing',
+      stage:`Analyzing camera frames · ${Math.round(((i+1)/total)*100)}%`,
+      progress:0.05+0.58*((i+1)/total),
+      etaSeconds:etaTextSeconds(remaining),
+    });
+    if(i%4===0) await new Promise(resolve=>setTimeout(resolve,0));
+  }
+
+  if(found/total<0.6) throw new Error('Your face was not clearly visible for enough of the recording. Keep your whole face in view and try again.');
+  if(processed.length<4) throw new Error('Could not track your mouth for enough of the recording.');
+
+  const count=Math.max(12,Math.min(500,Math.round(capture.duration/40)));
+  const tensor=new Float32Array(count*88*88);
+  let p=0;
+  for(let i=0;i<count;i++) {
+    const target=i*40;
+    while(p+1<processed.length && Math.abs(processed[p+1].time-target)<=Math.abs(processed[p].time-target)) p++;
+    tensor.set(processed[p].frame,i*88*88);
+  }
+  return {tensor,count,coverage:found/total,source:'live-camera'};
 }
 
 async function extract(blob,landmarker,meanFace,status) {
@@ -482,7 +523,9 @@ export async function transcribeLocally(blob,status,preparedFrames=null) {
   emit(status,{phase:'processing',stage:'Getting transcription ready…',progress:0.01,etaSeconds:null});
   const prepared=await preloadLocalModel(status);
   const {manifest,tokens,meanFace,landmarker}=prepared.resources;
-  const frameData=preparedFrames || await extract(blob,landmarker,meanFace,status);
+  const frameData=preparedFrames?.images
+    ? await extractCapturedImages(preparedFrames,landmarker,meanFace,status)
+    : preparedFrames || await extract(blob,landmarker,meanFace,status);
   const {tensor,count,coverage}=frameData;
   if(preparedFrames) {
     emit(status,{phase:'processing',stage:'Camera frames ready · starting transcription…',progress:0.63,etaSeconds:etaTextSeconds(inferenceEstimateMs(count))});
