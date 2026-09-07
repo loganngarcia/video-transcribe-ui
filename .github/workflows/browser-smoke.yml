@@ -5,6 +5,9 @@ on:
     paths:
       - .github/workflows/browser-smoke.yml
       - scripts/browser_smoke.mjs
+      - web/app.js
+      - web/index.html
+      - web/style.css
       - web/local-vsr.js
       - web/wasmer-runtime.js
       - vite.config.js
