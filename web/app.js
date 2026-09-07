@@ -339,13 +339,8 @@ $('record').onclick=async()=>{
       if(liveCaptureSession) {
         try { cameraFrames=liveCaptureSession.stop(); }
         catch(error) {
-          liveCaptureSession=null;
-          showTranscriptionError(error);
-          $('error-result').hidden=false;
-          $('empty-result').hidden=true;
-          $('result-tag').textContent='NEEDS ATTENTION';
-          stopCamera();
-          return;
+          console.warn('Live camera frame capture was incomplete; using the finalized recording fallback.',error);
+          cameraFrames=null;
         }
         liveCaptureSession=null;
       }
